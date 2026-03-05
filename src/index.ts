@@ -1,7 +1,8 @@
 import { spawn } from "child_process";
-import { writeFileSync, mkdirSync, existsSync, readFileSync } from "fs";
-import { join, dirname } from "path";
+import { writeFileSync, mkdirSync, existsSync } from "fs";
+import { join } from "path";
 import { homedir } from "os";
+import { randomUUID } from "crypto";
 
 interface MemUConfig {
   provider: "cloud" | "self-hosted";
@@ -23,6 +24,23 @@ interface MemUResult {
   error?: string;
 }
 
+interface ToolParams {
+  [key: string]: unknown;
+}
+
+let memuClient: MemUClient | null = null;
+let pluginApi: {
+  registerTool: (tool: unknown) => void;
+  registerGatewayMethod: (name: string, handler: (params: unknown) => Promise<unknown>) => void;
+  logger: { info: (msg: string) => void; error: (msg: string) => void };
+  config: Record<string, unknown>;
+} | null = null;
+
+function getConfig(): MemUConfig {
+  if (!pluginApi) return { provider: "cloud" };
+  return (pluginApi.config.plugins?.entries as Record<string, { config?: MemUConfig }>)?.memu?.config as MemUConfig || { provider: "cloud" };
+}
+
 class MemUClient {
   private config: MemUConfig;
   private pythonPath: string;
@@ -39,7 +57,7 @@ class MemUClient {
     this.pythonPath = process.platform === "win32" ? "python" : "python3";
   }
 
-  private async runPython(script: string, args: string[] = []): Promise<MemUResult> {
+  private async runPython(script: string, args: string[] = [], content?: string): Promise<MemUResult> {
     return new Promise((resolve) => {
       const scriptPath = join(this.workDir, "memu_wrapper.py");
       
@@ -50,6 +68,7 @@ class MemUClient {
         env: {
           ...process.env,
           OPENCLAW_MEMU_CONFIG: JSON.stringify(this.config),
+          OPENCLAW_MEMU_CONTENT: content || "",
         },
         stdio: ["pipe", "pipe", "pipe"],
       });
@@ -85,12 +104,12 @@ class MemUClient {
   }
 
   private generateWrapperScript(userScript: string): string {
-    const configStr = JSON.stringify(this.config);
-    
     return `
 import sys
 import json
 import os
+import tempfile
+import uuid
 
 config = json.loads(os.environ.get("OPENCLAW_MEMU_CONFIG", "{}"))
 
@@ -133,9 +152,12 @@ def get_database_config():
         }
     return {"metadata_store": {"provider": "inmemory"}}
 
-async def memorize(content, modality="conversation", user_id=None):
+async def memorize(modality="conversation", user_id=None):
     try:
-        from memu import MemoryService
+        from memu.app import MemoryService
+        
+        # Get content from environment variable
+        content = os.environ.get("OPENCLAW_MEMU_CONTENT", "")
         
         llm_profiles = get_llm_profile()
         db_config = get_database_config()
@@ -145,12 +167,23 @@ async def memorize(content, modality="conversation", user_id=None):
             database_config=db_config
         )
         
+        # Create temp file for content since memu expects a file path
+        temp_file = os.path.join(tempfile.gettempdir(), f"memu_{uuid.uuid4()}.txt")
+        with open(temp_file, "w", encoding="utf-8") as f:
+            f.write(content)
+        
         user = {"user_id": user_id} if user_id else {}
         result = await service.memorize(
-            resource_url=content,
+            resource_url=temp_file,
             modality=modality,
             user=user
         )
+        
+        # Clean up temp file
+        try:
+            os.remove(temp_file)
+        except:
+            pass
         
         return {"success": True, "data": result}
     except Exception as e:
@@ -158,21 +191,22 @@ async def memorize(content, modality="conversation", user_id=None):
 
 async def retrieve(queries, method="rag", user_id=None):
     try:
-        from memu import MemoryService
+        from memu.app import MemoryService
         
         llm_profiles = get_llm_profile()
         db_config = get_database_config()
         
         service = MemoryService(
             llm_profiles=llm_profiles,
-            database_config=db_config
+            database_config=db_config,
+            retrieve_config={"method": method}
         )
         
+        # user_id goes in 'where' clause
         where = {"user_id": user_id} if user_id else {}
         result = await service.retrieve(
             queries=queries,
-            where=where,
-            method=method
+            where=where
         )
         
         return {"success": True, "data": result}
@@ -233,14 +267,15 @@ if __name__ == "__main__":
     result = {}
     
     if command == "memorize":
-        content = args[0] if args else ""
-        modality = args[1] if len(args) > 1 else "conversation"
-        result = asyncio.run(memorize(content, modality))
+        modality = args[0] if args else "conversation"
+        user_id = args[1] if len(args) > 1 else None
+        result = asyncio.run(memorize(modality, user_id))
     elif command == "retrieve":
         queries_json = args[0] if args else "[]"
         method = args[1] if len(args) > 1 else "rag"
+        user_id = args[2] if len(args) > 2 else None
         queries = json.loads(queries_json)
-        result = asyncio.run(retrieve(queries, method))
+        result = asyncio.run(retrieve(queries, method, user_id))
     elif command == "cloud-memorize":
         content = args[0] if args else ""
         modality = args[1] if len(args) > 1 else "conversation"
@@ -258,14 +293,12 @@ if __name__ == "__main__":
   }
 
   async memorize(content: string, modality: string = "conversation", userId?: string): Promise<MemUResult> {
-    const userArg = userId || "default";
-    return this.runPython("memorize", [content, modality, userArg]);
+    return this.runPython("memorize", [modality, userId || ""], content);
   }
 
   async retrieve(queries: { role: string; content: { text: string } }[], method: "rag" | "llm" = "rag", userId?: string): Promise<MemUResult> {
     const queriesJson = JSON.stringify(queries);
-    const userArg = userId || "default";
-    return this.runPython("retrieve", [queriesJson, method, userArg]);
+    return this.runPython("retrieve", [queriesJson, method, userId || ""]);
   }
 
   async cloudMemorize(content: string, modality: string = "conversation"): Promise<MemUResult> {
@@ -278,7 +311,13 @@ if __name__ == "__main__":
   }
 }
 
-let memuClient: MemUClient | null = null;
+function getClient(): MemUClient {
+  if (!memuClient) {
+    const config = getConfig();
+    memuClient = new MemUClient(config);
+  }
+  return memuClient;
+}
 
 export default function (api: {
   registerTool: (tool: unknown) => void;
@@ -286,7 +325,7 @@ export default function (api: {
   logger: { info: (msg: string) => void; error: (msg: string) => void };
   config: Record<string, unknown>;
 }) {
-  const pluginId = "memu";
+  pluginApi = api;
 
   api.registerTool({
     name: "memu_memorize",
@@ -311,39 +350,35 @@ export default function (api: {
       },
       required: ["content"],
     },
-    handler: async (params: { content: string; modality?: string; user_id?: string }) => {
+    async execute(_id: string, params: ToolParams) {
       try {
-        if (!memuClient) {
-          const config = (api.config.plugins?.entries as Record<string, { config?: MemUConfig }>)?.memu?.config as MemUConfig || {};
-          memuClient = new MemUClient(config);
-        }
+        const client = getClient();
+        const { content, modality = "conversation", user_id } = params as {
+          content: string;
+          modality?: string;
+          user_id?: string;
+        };
 
-        const { content, modality = "conversation", user_id } = params;
-
-        if (memuClient["config"].provider === "cloud") {
-          const result = await memuClient.cloudMemorize(content, modality);
+        if (client["config"].provider === "cloud") {
+          const result = await client.cloudMemorize(content, modality);
           if (!result.success) {
-            return { error: result.error };
+            return { content: [{ type: "text", text: `Error: ${result.error}` }] };
           }
           return { 
-            success: true, 
-            message: "Content memorized to memU Cloud",
-            data: result.data 
+            content: [{ type: "text", text: `Content memorized to memU Cloud. Result: ${JSON.stringify(result.data)}` }]
           };
         } else {
-          const result = await memuClient.memorize(content, modality, user_id);
+          const result = await client.memorize(content, modality, user_id);
           if (!result.success) {
-            return { error: result.error };
+            return { content: [{ type: "text", text: `Error: ${result.error}` }] };
           }
           return { 
-            success: true, 
-            message: "Content memorized to local memU",
-            data: result.data 
+            content: [{ type: "text", text: `Content memorized to local memU. Result: ${JSON.stringify(result.data)}` }]
           };
         }
       } catch (error) {
         api.logger.error(`memu_memorize error: ${error}`);
-        return { error: String(error) };
+        return { content: [{ type: "text", text: `Error: ${String(error)}` }] };
       }
     },
   });
@@ -354,23 +389,9 @@ export default function (api: {
     parameters: {
       type: "object",
       properties: {
-        queries: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              role: { type: "string" },
-              content: {
-                type: "object",
-                properties: {
-                  text: { type: "string" },
-                },
-                required: ["text"],
-              },
-            },
-            required: ["role", "content"],
-          },
-          description: "Array of query messages to search memory",
+        query_text: {
+          type: "string",
+          description: "The search query text to find relevant memories",
         },
         method: {
           type: "string",
@@ -383,39 +404,39 @@ export default function (api: {
           description: "Optional user identifier to scope the search",
         },
       },
-      required: ["queries"],
+      required: ["query_text"],
     },
-    handler: async (params: { queries: { role: string; content: { text: string } }[]; method?: "rag" | "llm"; user_id?: string }) => {
+    async execute(_id: string, params: ToolParams) {
       try {
-        if (!memuClient) {
-          const config = (api.config.plugins?.entries as Record<string, { config?: MemUConfig }>)?.memu?.config as MemUConfig || {};
-          memuClient = new MemUClient(config);
-        }
+        const client = getClient();
+        const { query_text, method = "rag", user_id } = params as {
+          query_text: string;
+          method?: "rag" | "llm";
+          user_id?: string;
+        };
 
-        const { queries, method = "rag", user_id } = params;
+        const queries = [{ role: "user", content: { text: query_text } }];
 
-        if (memuClient["config"].provider === "cloud") {
-          const result = await memuClient.cloudRetrieve(queries, method);
+        if (client["config"].provider === "cloud") {
+          const result = await client.cloudRetrieve(queries, method);
           if (!result.success) {
-            return { error: result.error };
+            return { content: [{ type: "text", text: `Error: ${result.error}` }] };
           }
           return { 
-            success: true, 
-            memories: result.data 
+            content: [{ type: "text", text: `Retrieved memories: ${JSON.stringify(result.data)}` }]
           };
         } else {
-          const result = await memuClient.retrieve(queries, method, user_id);
+          const result = await client.retrieve(queries, method, user_id);
           if (!result.success) {
-            return { error: result.error };
+            return { content: [{ type: "text", text: `Error: ${result.error}` }] };
           }
           return { 
-            success: true, 
-            memories: result.data 
+            content: [{ type: "text", text: `Retrieved memories: ${JSON.stringify(result.data)}` }]
           };
         }
       } catch (error) {
         api.logger.error(`memu_retrieve error: ${error}`);
-        return { error: String(error) };
+        return { content: [{ type: "text", text: `Error: ${String(error)}` }] };
       }
     },
   });
@@ -437,27 +458,25 @@ export default function (api: {
       },
       required: ["query"],
     },
-    handler: async (params: { query: string; user_id?: string }) => {
+    async execute(_id: string, params: ToolParams) {
       try {
-        if (!memuClient) {
-          const config = (api.config.plugins?.entries as Record<string, { config?: MemUConfig }>)?.memu?.config as MemUConfig || {};
-          memuClient = new MemUClient(config);
-        }
-
-        const { query, user_id } = params;
+        const client = getClient();
+        const { query, user_id } = params as {
+          query: string;
+          user_id?: string;
+        };
         const queries = [{ role: "user", content: { text: query } }];
 
-        const result = await memuClient.retrieve(queries, "rag", user_id);
+        const result = await client.retrieve(queries, "rag", user_id);
         if (!result.success) {
-          return { error: result.error };
+          return { content: [{ type: "text", text: `Error: ${result.error}` }] };
         }
         return { 
-          success: true, 
-          results: result.data 
+          content: [{ type: "text", text: `Search results: ${JSON.stringify(result.data)}` }]
         };
       } catch (error) {
         api.logger.error(`memu_search error: ${error}`);
-        return { error: String(error) };
+        return { content: [{ type: "text", text: `Error: ${String(error)}` }] };
       }
     },
   });
@@ -473,15 +492,11 @@ export default function (api: {
 
   api.registerGatewayMethod("memu.health", async () => {
     try {
-      if (!memuClient) {
-        const config = (api.config.plugins?.entries as Record<string, { config?: MemUConfig }>)?.memu?.config as MemUConfig || {};
-        memuClient = new MemUClient(config);
-      }
-      
+      const config = getConfig();
       return {
         ok: true,
-        provider: memuClient["config"].provider,
-        storage: memuClient["config"].storageType || "cloud",
+        provider: config.provider,
+        storage: config.storageType || "cloud",
       };
     } catch (error) {
       return {

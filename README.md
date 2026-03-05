@@ -119,17 +119,13 @@ Retrieve relevant memories for context. Supports two retrieval methods:
 ```typescript
 // Get context before responding
 const result = await memu_retrieve({
-  queries: [
-    { role: "user", content: { text: "What are user's communication preferences?" } }
-  ],
+  query_text: "What are user's communication preferences?",
   method: "rag"
 });
 
 // Deep reasoning retrieval
 const deepResult = await memu_retrieve({
-  queries: [
-    { role: "user", content: { text: "What should I know about this user?" } }
-  ],
+  query_text: "What should I know about this user?",
   method: "llm"
 });
 ```
@@ -231,6 +227,38 @@ Get your API key at [memu.so](https://memu.so).
 - Python 3.13+ (for self-hosted memU)
 - memU Python package: `pip install memu-py`
 - For PostgreSQL storage: PostgreSQL with pgvector extension
+
+## Troubleshooting
+
+### Plugin not loading
+
+```bash
+# Check if plugin is loaded
+openclaw plugins list
+
+# View gateway logs
+openclaw gateway logs
+```
+
+### Python not found
+
+Make sure Python 3.13+ is installed and available in PATH:
+```bash
+python --version
+```
+
+### memu-py not installed
+
+```bash
+pip install memu-py
+```
+
+### Import errors
+
+If you see import errors, ensure memu-py is correctly installed:
+```bash
+python -c "from memu.app import MemoryService; print('OK')"
+```
 
 ## Related Projects
 
