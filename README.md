@@ -1,6 +1,20 @@
 # memU Plugin for OpenClaw
 
-[24/7 Proactive Memory](https://github.com/NevaMind-AI/memU) integration for OpenClaw AI agents.
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.13+-green.svg)](https://www.python.org/downloads/)
+[![OpenClaw](https://img.shields.io/badge/OpenClaw-0.1.0+-orange.svg)](https://openclaw.ai)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-3178c6.svg)](https://www.typescriptlang.org/)
+
+[24/7 Proactive Memory](https://github.com/NevaMind-AI/memU) integration for OpenClaw AI agents. Give your AI assistant permanent memory that learns from every conversation.
+
+## Why memU?
+
+Traditional AI assistants have no memory - they forget everything after each conversation. memU changes this by providing:
+
+- **Persistent Memory**: Remembers facts, preferences, and skills across sessions
+- **Proactive Context**: Surfaces relevant memories before you even ask
+- **Cost Efficient**: Reduces token costs with smart context caching (~1/10 of comparable usage)
+- **Hierarchical Storage**: Organized like a file system - categories, items, and resources
 
 ## Features
 
@@ -10,27 +24,34 @@
 - **Flexible LLM Providers**: OpenAI, OpenRouter, or custom endpoints
 - **Cloud or Self-Hosted**: Use memU Cloud API or deploy your own
 
-## Installation
+## Quick Start
 
-### Option 1: Local Development
+### 1. Install Dependencies
 
 ```bash
-# Clone or copy this plugin to your extensions directory
+# Install memU Python package
+pip install memu-py
+
+# Optional: For PostgreSQL storage
+# docker run -d --name memu-postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=memu -p 5432:5432 pgvector/pgvector:pg16
+```
+
+### 2. Install the Plugin
+
+```bash
+# Clone this repository
+git clone https://github.com/allbugterminator/openclaw-memu-plugin.git
+
+# Copy to OpenClaw extensions directory
 cp -r openclaw-memu-plugin ~/.openclaw/extensions/memu
 
 # Restart the Gateway
 openclaw gateway restart
 ```
 
-### Option 2: Install from npm (when published)
+### 3. Configure
 
-```bash
-openclaw plugins install @openclaw/memu
-```
-
-## Configuration
-
-Add to your OpenClaw config:
+Add to your OpenClaw `config.json`:
 
 ```json
 {
@@ -44,9 +65,7 @@ Add to your OpenClaw config:
           "llmProvider": "openai",
           "llmApiKey": "your-openai-api-key",
           "llmModel": "gpt-4o",
-          "embeddingModel": "text-embedding-3-small",
-          "autoLearn": true,
-          "proactiveRetrieval": true
+          "embeddingModel": "text-embedding-3-small"
         }
       }
     }
@@ -54,7 +73,7 @@ Add to your OpenClaw config:
 }
 ```
 
-### Configuration Options
+## Configuration Options
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
@@ -74,66 +93,96 @@ Add to your OpenClaw config:
 
 ### memu_memorize
 
-Store information in memU memory.
+Store information in memU memory. Use this to remember facts, preferences, skills, and important context.
 
 ```typescript
+// Memorize a user preference
 await memu_memorize({
   content: "User prefers to be addressed in a formal manner",
   modality: "conversation"
+});
+
+// Memorize from a document
+await memu_memorize({
+  content: "Python best practices: use type hints, write docstrings, follow PEP 8",
+  modality: "document"
 });
 ```
 
 ### memu_retrieve
 
-Retrieve relevant memories for context.
+Retrieve relevant memories for context. Supports two retrieval methods:
+
+- **`rag`**: Fast embedding-based retrieval (recommended for most cases)
+- **`llm`**: Deep reasoning-based retrieval (slower but more accurate for complex queries)
 
 ```typescript
-await memu_retrieve({
+// Get context before responding
+const result = await memu_retrieve({
   queries: [
     { role: "user", content: { text: "What are user's communication preferences?" } }
   ],
   method: "rag"
 });
+
+// Deep reasoning retrieval
+const deepResult = await memu_retrieve({
+  queries: [
+    { role: "user", content: { text: "What should I know about this user?" } }
+  ],
+  method: "llm"
+});
 ```
 
 ### memu_search
 
-Quick search for specific facts.
+Quick search for specific facts in memory.
 
 ```typescript
-await memu_search({
-  query: "user's email preferences"
+// Quick search
+const searchResult = await memu_search({
+  query: "user's programming language preferences"
 });
 ```
 
 ## Gateway RPC Methods
 
-- `memu.status` - Get plugin status
-- `memu.health` - Check plugin health
+```bash
+# Get plugin status
+openclaw rpc call memu.status
 
-## Requirements
-
-- Python 3.13+ (for self-hosted memU)
-- memU Python package: `pip install memu-py`
-- For PostgreSQL storage: PostgreSQL with pgvector extension
-
-## Example Usage
-
-### Memorize a Conversation
-
-```
-User: I prefer technical documentation with code examples
-Agent: I'll remember that you prefer technical documentation with code examples.
+# Check plugin health
+openclaw rpc call memu.health
 ```
 
-The agent can then call `memu_memorize` to store this preference.
+## Usage Examples
 
-### Retrieve Context
+### Example 1: Remembering User Preferences
 
-When responding to a complex query, the agent can:
-1. Call `memu_retrieve` with the user's query
-2. Get relevant memories (preferences, past interactions, learned skills)
-3. Provide a more personalized and context-aware response
+```
+User: I prefer receiving weekly summary emails on Fridays.
+Agent: I'll remember that you prefer weekly summary emails on Fridays. 
+       Would you like me to set up any automation for this?
+```
+
+The agent can then call `memu_memorize` to store this preference for future reference.
+
+### Example 2: Context-Aware Responses
+
+When the user asks "What did I work on last week?", the agent:
+
+1. Calls `memu_retrieve` with the query
+2. Gets relevant memories about past projects
+3. Provides a personalized, context-aware response
+
+### Example 3: Skill Learning
+
+The agent observes user behavior and learns skills:
+
+```
+User: [Uses vim keybindings throughout the session]
+Agent: [memorizes user's preference for vim keybindings]
+```
 
 ## Architecture
 
@@ -155,6 +204,44 @@ When responding to a complex query, the agent can:
                                │ - Custom
 ```
 
+## Cloud API Configuration
+
+To use memU Cloud instead of self-hosted:
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "memu": {
+        "enabled": true,
+        "config": {
+          "provider": "cloud",
+          "cloudApiKey": "your-memu-cloud-api-key"
+        }
+      }
+    }
+  }
+}
+```
+
+Get your API key at [memu.so](https://memu.so).
+
+## Requirements
+
+- Python 3.13+ (for self-hosted memU)
+- memU Python package: `pip install memu-py`
+- For PostgreSQL storage: PostgreSQL with pgvector extension
+
+## Related Projects
+
+- [memU](https://github.com/NevaMind-AI/memU) - Core proactive memory engine
+- [memUBot](https://github.com/NevaMind-AI/memUBot) - Enterprise-ready OpenClaw with memU
+- [OpenClaw](https://github.com/openclaw/openclaw) - Open source AI coding assistant
+
 ## License
 
-Apache License 2.0
+Apache License 2.0 - see [LICENSE](LICENSE) for details.
+
+---
+
+If you find this plugin useful, please consider starring the [memU repository](https://github.com/NevaMind-AI/memU)!
