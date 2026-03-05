@@ -1,0 +1,31 @@
+{
+  "name": "@openclaw/memu",
+  "version": "1.0.0",
+  "description": "memU Memory Integration for OpenClaw - 24/7 Proactive Memory for AI Agents",
+  "main": "src/index.ts",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "test": "echo \"No tests specified\""
+  },
+  "keywords": [
+    "openclaw",
+    "memu",
+    "memory",
+    "ai",
+    "agent",
+    "proactive"
+  ],
+  "author": "",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "openclaw": ">=0.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "openclaw": {
+    "extensions": ["./src/index.ts"]
+  }
+}

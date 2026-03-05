@@ -1,0 +1,98 @@
+{
+  "id": "memu",
+  "name": "memU Memory Integration",
+  "description": "24/7 Proactive Memory for AI Agents - Integrates memU memory framework with OpenClaw",
+  "version": "1.0.0",
+  "openclawVersion": ">=0.1.0",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "provider": {
+        "type": "string",
+        "enum": ["cloud", "self-hosted"],
+        "default": "cloud",
+        "description": "memU provider type"
+      },
+      "cloudApiKey": {
+        "type": "string",
+        "description": "memU Cloud API key (for cloud provider)"
+      },
+      "storageType": {
+        "type": "string",
+        "enum": ["inmemory", "postgres"],
+        "default": "inmemory",
+        "description": "Storage backend type (for self-hosted)"
+      },
+      "postgresConnectionString": {
+        "type": "string",
+        "description": "PostgreSQL connection string (for postgres storage)"
+      },
+      "llmProvider": {
+        "type": "string",
+        "enum": ["openai", "openrouter", "custom"],
+        "default": "openai",
+        "description": "LLM provider for memory processing"
+      },
+      "llmApiKey": {
+        "type": "string",
+        "description": "API key for LLM provider"
+      },
+      "llmBaseUrl": {
+        "type": "string",
+        "description": "Custom LLM base URL (for custom provider)"
+      },
+      "llmModel": {
+        "type": "string",
+        "default": "gpt-4o",
+        "description": "LLM model to use"
+      },
+      "embeddingModel": {
+        "type": "string",
+        "default": "text-embedding-3-small",
+        "description": "Embedding model for RAG retrieval"
+      },
+      "autoLearn": {
+        "type": "boolean",
+        "default": true,
+        "description": "Automatically learn from conversations"
+      },
+      "proactiveRetrieval": {
+        "type": "boolean",
+        "default": true,
+        "description": "Enable proactive context loading"
+      }
+    }
+  },
+  "uiHints": {
+    "cloudApiKey": { "label": "memU Cloud API Key", "sensitive": true },
+    "postgresConnectionString": { "label": "PostgreSQL Connection String", "sensitive": true },
+    "llmApiKey": { "label": "LLM API Key", "sensitive": true },
+    "llmBaseUrl": { "label": "LLM Base URL", "placeholder": "https://api.openai.com/v1" },
+    "provider": { "label": "Provider", "description": "Use cloud or self-hosted memU" },
+    "storageType": { "label": "Storage Type", "description": "Memory storage backend" },
+    "autoLearn": { "label": "Auto Learn", "description": "Automatically memorize conversations" }
+  },
+  "schema": {
+    "provider": {
+      "type": "string",
+      "enum": ["cloud", "self-hosted"]
+    },
+    "cloudApiKey": { "type": "string" },
+    "storageType": {
+      "type": "string",
+      "enum": ["inmemory", "postgres"]
+    },
+    "postgresConnectionString": { "type": "string" },
+    "llmProvider": {
+      "type": "string",
+      "enum": ["openai", "openrouter", "custom"]
+    },
+    "llmApiKey": { "type": "string" },
+    "llmBaseUrl": { "type": "string" },
+    "llmModel": { "type": "string" },
+    "embeddingModel": { "type": "string" },
+    "autoLearn": { "type": "boolean" },
+    "proactiveRetrieval": { "type": "boolean" }
+  }
+}
