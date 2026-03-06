@@ -68,7 +68,6 @@ class MemUClient {
         env: {
           ...process.env,
           OPENCLAW_MEMU_CONFIG: JSON.stringify(this.config),
-          OPENCLAW_MEMU_CONTENT: content || "",
         },
         stdio: ["pipe", "pipe", "pipe"],
       });
@@ -155,9 +154,6 @@ def get_database_config():
 async def memorize(content="", modality="conversation", user_id=None):
     try:
         from memu.app import MemoryService
-        
-        content = os.environ.get("OPENCLAW_MEMU_CONTENT", content)
-        modality = os.environ.get("OPENCLAW_MEMU_MODALITY", modality)
         
         llm_profiles = get_llm_profile()
         db_config = get_database_config()
@@ -266,9 +262,10 @@ if __name__ == "__main__":
     result = {}
     
     if command == "memorize":
-        modality = args[0] if args else "conversation"
-        user_id = args[1] if len(args) > 1 and args[1] else None
-        result = asyncio.run(memorize("", modality, user_id))
+        content = args[0] if args else ""
+        modality = args[1] if len(args) > 1 else "conversation"
+        user_id = args[2] if len(args) > 2 and args[2] else None
+        result = asyncio.run(memorize(content, modality, user_id))
     elif command == "retrieve":
         method = args[0] if args else "rag"
         queries_json = args[1] if len(args) > 1 else "[]"
@@ -292,7 +289,7 @@ if __name__ == "__main__":
   }
 
   async memorize(content: string, modality: string = "conversation", userId?: string): Promise<MemUResult> {
-    return this.runPython("memorize", [modality, userId || ""], content);
+    return this.runPython("memorize", [content, modality, userId || ""]);
   }
 
   async retrieve(queries: { role: string; content: { text: string } }[], method: "rag" | "llm" = "rag", userId?: string): Promise<MemUResult> {
