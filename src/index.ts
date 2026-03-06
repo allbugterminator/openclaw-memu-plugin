@@ -157,6 +157,7 @@ async def memorize(content="", modality="conversation", user_id=None):
         from memu.app import MemoryService
         
         content = os.environ.get("OPENCLAW_MEMU_CONTENT", content)
+        modality = os.environ.get("OPENCLAW_MEMU_MODALITY", modality)
         
         llm_profiles = get_llm_profile()
         db_config = get_database_config()
@@ -174,7 +175,6 @@ async def memorize(content="", modality="conversation", user_id=None):
         user = {"user_id": user_id} if user_id else {}
         result = await service.memorize(
             resource_url=temp_file,
-            modality=modality,
             user=user
         )
         
