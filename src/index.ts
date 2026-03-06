@@ -270,8 +270,8 @@ if __name__ == "__main__":
         user_id = args[1] if len(args) > 1 and args[1] else None
         result = asyncio.run(memorize("", modality, user_id))
     elif command == "retrieve":
-        queries_json = args[0] if args else "[]"
-        method = args[1] if len(args) > 1 else "rag"
+        method = args[0] if args else "rag"
+        queries_json = args[1] if len(args) > 1 else "[]"
         user_id = args[2] if len(args) > 2 and args[2] else None
         queries = json.loads(queries_json)
         result = asyncio.run(retrieve(queries, method, user_id))
@@ -280,8 +280,8 @@ if __name__ == "__main__":
         modality = args[1] if len(args) > 1 else "conversation"
         result = asyncio.run(cloud_memorize(content, modality))
     elif command == "cloud-retrieve":
-        queries_json = args[0] if args else "[]"
-        method = args[1] if len(args) > 1 else "rag"
+        method = args[0] if args else "rag"
+        queries_json = args[1] if len(args) > 1 else "[]"
         queries = json.loads(queries_json)
         result = asyncio.run(cloud_retrieve(queries, method))
     else:
@@ -297,7 +297,7 @@ if __name__ == "__main__":
 
   async retrieve(queries: { role: string; content: { text: string } }[], method: "rag" | "llm" = "rag", userId?: string): Promise<MemUResult> {
     const queriesJson = JSON.stringify(queries);
-    return this.runPython("retrieve", [queriesJson, method, userId || ""]);
+    return this.runPython("retrieve", [method, queriesJson, userId || ""]);
   }
 
   async cloudMemorize(content: string, modality: string = "conversation"): Promise<MemUResult> {
@@ -306,7 +306,7 @@ if __name__ == "__main__":
 
   async cloudRetrieve(queries: { role: string; content: { text: string } }[], method: "rag" | "llm" = "rag"): Promise<MemUResult> {
     const queriesJson = JSON.stringify(queries);
-    return this.runPython("cloud-retrieve", [queriesJson, method]);
+    return this.runPython("cloud-retrieve", [method, queriesJson]);
   }
 }
 
