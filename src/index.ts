@@ -289,21 +289,21 @@ if __name__ == "__main__":
   }
 
   async memorize(content: string, modality: string = "conversation", userId?: string): Promise<MemUResult> {
-    return this.runPython("memorize", [content, modality, userId || ""]);
+    return this.runPython("", ["memorize", content, modality, userId || ""]);
   }
 
   async retrieve(queries: { role: string; content: { text: string } }[], method: "rag" | "llm" = "rag", userId?: string): Promise<MemUResult> {
     const queriesJson = JSON.stringify(queries);
-    return this.runPython("retrieve", [method, queriesJson, userId || ""]);
+    return this.runPython("", ["retrieve", method, queriesJson, userId || ""]);
   }
 
   async cloudMemorize(content: string, modality: string = "conversation"): Promise<MemUResult> {
-    return this.runPython("cloud-memorize", [content, modality]);
+    return this.runPython("", ["cloud-memorize", content, modality]);
   }
 
   async cloudRetrieve(queries: { role: string; content: { text: string } }[], method: "rag" | "llm" = "rag"): Promise<MemUResult> {
     const queriesJson = JSON.stringify(queries);
-    return this.runPython("cloud-retrieve", [method, queriesJson]);
+    return this.runPython("", ["cloud-retrieve", method, queriesJson]);
   }
 }
 
