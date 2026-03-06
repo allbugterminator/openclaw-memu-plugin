@@ -262,8 +262,8 @@ if __name__ == "__main__":
     result = {}
     
     if command == "memorize":
-        content = args[0] if args else ""
-        modality = args[1] if len(args) > 1 else "conversation"
+        modality = args[0] if args else "conversation"
+        content = args[1] if len(args) > 1 else ""
         user_id = args[2] if len(args) > 2 and args[2] else None
         result = asyncio.run(memorize(content, modality, user_id))
     elif command == "retrieve":
@@ -289,7 +289,7 @@ if __name__ == "__main__":
   }
 
   async memorize(content: string, modality: string = "conversation", userId?: string): Promise<MemUResult> {
-    return this.runPython("", ["memorize", content, modality, userId || ""]);
+    return this.runPython("", ["memorize", modality, content, userId || ""]);
   }
 
   async retrieve(queries: { role: string; content: { text: string } }[], method: "rag" | "llm" = "rag", userId?: string): Promise<MemUResult> {
