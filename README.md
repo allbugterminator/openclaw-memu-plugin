@@ -34,6 +34,9 @@ pip install memu-py
 
 # Optional: For PostgreSQL storage
 # docker run -d --name memu-postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=memu -p 5432:5432 pgvector/pgvector:pg16
+
+# Required for PostgreSQL storage (psycopg2 driver)
+# pip install psycopg2-binary
 ```
 
 ### 2. Install the Plugin
@@ -226,6 +229,7 @@ Get your API key at [memu.so](https://memu.so).
 
 - Python 3.13+ (for self-hosted memU)
 - memU Python package: `pip install memu-py`
+- PostgreSQL driver: `pip install psycopg2-binary` (required for PostgreSQL storage)
 - For PostgreSQL storage: PostgreSQL with pgvector extension
 
 ## Troubleshooting
