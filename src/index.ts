@@ -271,7 +271,7 @@ if __name__ == "__main__":
     elif command == "retrieve":
         queries_json = args[0] if args else "[]"
         method = args[1] if len(args) > 1 else "rag"
-        user_id = args[2] if len(args) > 2 else None
+        user_id = args[2] if len(args) > 2 and args[2] else None
         queries = json.loads(queries_json)
         result = asyncio.run(retrieve(queries, method, user_id))
     elif command == "cloud-memorize":
