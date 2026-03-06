@@ -156,6 +156,8 @@ async def memorize(content="", modality="conversation", user_id=None):
     try:
         from memu.app import MemoryService
         
+        content = os.environ.get("OPENCLAW_MEMU_CONTENT", content)
+        
         llm_profiles = get_llm_profile()
         db_config = get_database_config()
         
@@ -264,10 +266,9 @@ if __name__ == "__main__":
     result = {}
     
     if command == "memorize":
-        content = args[0] if args else ""
-        modality = args[1] if len(args) > 1 else "conversation"
-        user_id = args[2] if len(args) > 2 and args[2] else None
-        result = asyncio.run(memorize(content, modality, user_id))
+        modality = args[0] if args else "conversation"
+        user_id = args[1] if len(args) > 1 and args[1] else None
+        result = asyncio.run(memorize("", modality, user_id))
     elif command == "retrieve":
         queries_json = args[0] if args else "[]"
         method = args[1] if len(args) > 1 else "rag"
@@ -291,7 +292,7 @@ if __name__ == "__main__":
   }
 
   async memorize(content: string, modality: string = "conversation", userId?: string): Promise<MemUResult> {
-    return this.runPython("memorize", [content, modality, userId || ""]);
+    return this.runPython("memorize", [modality, userId || ""], content);
   }
 
   async retrieve(queries: { role: string; content: { text: string } }[], method: "rag" | "llm" = "rag", userId?: string): Promise<MemUResult> {
