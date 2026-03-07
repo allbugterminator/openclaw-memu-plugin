@@ -61,6 +61,21 @@
         "type": "boolean",
         "default": true,
         "description": "Enable proactive context loading"
+      },
+      "chunk_size": {
+        "type": "number",
+        "default": 1500,
+        "description": "Maximum character size per memory chunk"
+      },
+      "chunk_overlap": {
+        "type": "number",
+        "default": 200,
+        "description": "Overlap character count between consecutive chunks"
+      },
+      "auto_split_threshold": {
+        "type": "number",
+        "default": 3000,
+        "description": "Threshold for automatic memory splitting"
       }
     }
   },
@@ -93,6 +108,9 @@
     "llmModel": { "type": "string" },
     "embeddingModel": { "type": "string" },
     "autoLearn": { "type": "boolean" },
-    "proactiveRetrieval": { "type": "boolean" }
+    "proactiveRetrieval": { "type": "boolean" },
+    "chunk_size": { "type": "number" },
+    "chunk_overlap": { "type": "number" },
+    "auto_split_threshold": { "type": "number" }
   }
 }
