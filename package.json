@@ -1,31 +1,107 @@
 {
-  "name": "@openclaw/memu",
-  "version": "1.0.0",
-  "description": "memU Memory Integration for OpenClaw - 24/7 Proactive Memory for AI Agents",
+  "name": "openclaw-extension-memu",
+  "version": "2.0.0",
+  "description": "memU memory service integration for OpenClaw (pure TypeScript version)",
   "main": "src/index.ts",
-  "type": "module",
   "scripts": {
-    "build": "tsc",
-    "test": "echo \"No tests specified\""
+    "build": "tsc"
   },
   "keywords": [
     "openclaw",
-    "memu",
+    "extension",
     "memory",
-    "ai",
-    "agent",
-    "proactive"
+    "memu"
   ],
   "author": "",
-  "license": "Apache-2.0",
+  "license": "MIT",
   "dependencies": {
-    "openclaw": ">=0.1.0"
+    "openai": "^4.0.0",
+    "pg": "^8.11.0",
+    "uuid": "^9.0.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
+    "@types/pg": "^8.10.0",
+    "@types/uuid": "^9.0.0",
     "typescript": "^5.0.0"
   },
   "openclaw": {
-    "extensions": ["./src/index.ts"]
+    "extension": {
+      "id": "memu",
+      "name": "memU Memory Integration",
+      "version": "2.0.0",
+      "description": "memU memory service integration for OpenClaw (pure TypeScript version)",
+      "entry": "src/index.ts",
+      "permissions": [],
+      "configSchema": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "provider": {
+            "type": "string",
+            "enum": ["cloud", "self-hosted"],
+            "default": "self-hosted"
+          },
+          "storageType": {
+            "type": "string",
+            "enum": ["inmemory", "postgres"],
+            "default": "postgres"
+          },
+          "postgresConnectionString": {
+            "type": "string",
+            "description": "PostgreSQL connection string for memU database"
+          },
+          "llmProvider": {
+            "type": "string",
+            "enum": ["openai", "anthropic", "custom"],
+            "default": "custom"
+          },
+          "llmApiKey": {
+            "type": "string",
+            "description": "LLM API key"
+          },
+          "llmBaseUrl": {
+            "type": "string",
+            "description": "Custom LLM base URL"
+          },
+          "llmModel": {
+            "type": "string",
+            "default": "gpt-4o-mini",
+            "description": "LLM model name"
+          },
+          "embeddingModel": {
+            "type": "string",
+            "default": "text-embedding-3-small",
+            "description": "Embedding model name"
+          },
+          "autoLearn": {
+            "type": "boolean",
+            "default": false,
+            "description": "Automatically learn from conversations"
+          },
+          "proactiveRetrieval": {
+            "type": "boolean",
+            "default": false,
+            "description": "Proactively retrieve relevant memory during conversations"
+          },
+          "chunk_size": {
+            "type": "number",
+            "default": 1000,
+            "description": "Maximum characters per chunk when splitting long content"
+          },
+          "chunk_overlap": {
+            "type": "number",
+            "default": 100,
+            "description": "Overlap characters between consecutive chunks"
+          },
+          "auto_split_threshold": {
+            "type": "number",
+            "default": 2000,
+            "description": "Content length threshold to trigger auto-splitting"
+          }
+        },
+        "required": ["postgresConnectionString", "llmApiKey"]
+      }
+    }
   }
 }

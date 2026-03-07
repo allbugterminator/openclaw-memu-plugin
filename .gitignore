@@ -1,0 +1,16 @@
+node_modules/
+dist/
+python-libs/
+data/
+__pycache__/
+*.pyc
+*.pyo
+.env
+.env.local
+*.log
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
