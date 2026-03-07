@@ -355,6 +355,52 @@ function register(api: any) {
   state.retrieve = boundRetrieve;
   state.search = boundSearch;
 
+  // Auto-learn hook: store conversation pairs when agent ends
+  if (state.config.autoLearn) {
+    api.on("agent_end", async (event: any) => {
+      if (!event.success || !event.messages || event.messages.length === 0) {
+        return;
+      }
+
+      try {
+        let lastUserQuery = "";
+        
+        for (const msg of event.messages) {
+          if (!msg || typeof msg !== "object") continue;
+          
+          const role = msg.role;
+          let content = "";
+          
+          // Extract text content
+          if (typeof msg.content === "string") {
+            content = msg.content;
+          } else if (Array.isArray(msg.content)) {
+            content = msg.content
+              .filter((block: any) => block?.type === "text" && block?.text)
+              .map((block: any) => block.text)
+              .join("\n");
+          }
+          
+          if (!content.trim()) continue;
+          
+          // Pair user query with assistant response
+          if (role === "user") {
+            lastUserQuery = content.trim();
+          } else if (role === "assistant" && lastUserQuery) {
+            const conversationText = `用户查询: ${lastUserQuery}\n助手回复: ${content.trim()}`;
+            await boundMemorize(conversationText, "conversation", undefined, {
+              type: "conversation_pair",
+              timestamp: Date.now()
+            });
+            lastUserQuery = ""; // Reset after pairing
+          }
+        }
+      } catch (error) {
+        console.error("❌ Auto-learn failed:", error);
+      }
+    });
+  }
+
   // Activate
   activate();
   
