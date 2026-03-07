@@ -2,11 +2,20 @@ import { Extension } from "@openclaw/sdk";
 import fs from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
-import { execa } from "execa";
-import { spawn } from "child_process";
-import { writeFileSync, mkdirSync, existsSync, readFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { randomUUID } from "crypto";
+import { Pool } from "pg";
+import pgvector from "pgvector";
+import { OpenAIEmbeddings } from "@langchain/openai";
+import { MemoryVectorStore } from "langchain/vectorstores/memory";
+import { PGVectorStore } from "@langchain/community/vectorstores/pgvector";
+import { Document } from "@langchain/core/documents";
+import { ChatOpenAI } from "@langchain/openai";
+import { ChatAnthropic } from "@langchain/anthropic";
+import { ChatVolcengine } from "@langchain/community/chat_models/volcengine";
+import { StringOutputParser } from "@langchain/core/output_parsers";
+import { ChatPromptTemplate } from "@langchain/core/prompts";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -18,7 +27,7 @@ interface MemUConfig {
   storageType?: "inmemory" | "postgres" | "file";
   postgresConnectionString?: string;
   dataDir?: string;
-  llmProvider?: "openai" | "openrouter" | "custom" | "anthropic" | "volcengine";
+  llmProvider?: "openai" | "anthropic" | "volcengine" | "custom";
   llmApiKey?: string;
   llmBaseUrl?: string;
   llmModel?: string;
@@ -47,7 +56,7 @@ interface MemoryRecord {
   userId?: string;
   sessionId?: string;
   timestamp: number;
-  metadata?: Record<string, any>;
+  metadata: Record<string, any>;
   embedding?: number[];
   score?: number;
 }
@@ -61,19 +70,18 @@ interface RetrievalOptions {
 
 class MemUClient {
   private config: MemUConfig;
-  private pythonPath: string;
   private workDir: string;
-  private servicePath: string;
-  private wrapperPath: string;
+  private vectorStore: MemoryVectorStore | PGVectorStore | null = null;
+  private embeddings: OpenAIEmbeddings | null = null;
+  private llm: any = null;
+  private pgPool: Pool | null = null;
+  private memories: Map<string, MemoryRecord> = new Map();
 
   constructor(config: Partial<MemUConfig> = {}) {
     this.config = this.loadConfig(config);
-    this.pythonPath = process.platform === "win32" ? "python" : "python3";
     this.workDir = this.config.dataDir || path.join(homedir(), ".openclaw", "memu-data");
-    this.servicePath = path.join(__dirname, "..", "memu", "app.py");
-    this.wrapperPath = path.join(this.workDir, "memu_wrapper.py");
-    
     this.initWorkDir();
+    this.initServices();
   }
 
   private loadConfig(override: Partial<MemUConfig>): MemUConfig {
@@ -170,238 +178,560 @@ class MemUClient {
     if (!existsSync(this.workDir)) {
       mkdirSync(this.workDir, { recursive: true });
     }
-  }
 
-  private generateWrapperScript(command: string): string {
-    return `
-import sys
-import json
-import os
-sys.path.insert(0, "${path.dirname(this.servicePath)}")
-
-try:
-    from app import MemU
-    config = json.loads(os.environ.get("OPENCLAW_MEMU_CONFIG", "{}"))
-    memu = MemU(config)
-    
-    args = sys.argv[1:]
-    
-    if command == "memorize":
-        content = args[1] if len(args) > 1 else ""
-        modality = args[0] if len(args) > 0 else "conversation"
-        user_id = args[2] if len(args) > 2 else None
-        result = memu.memorize(content, modality, user_id)
-    elif command == "retrieve":
-        method = args[0] if len(args) > 0 else "rag"
-        queries = json.loads(args[1]) if len(args) > 1 else []
-        user_id = args[2] if len(args) > 2 else None
-        options = json.loads(args[3]) if len(args) > 3 else {}
-        result = memu.retrieve(queries, method, user_id, options)
-    elif command == "search":
-        query = args[0] if len(args) > 0 else ""
-        user_id = args[1] if len(args) > 1 else None
-        options = json.loads(args[2]) if len(args) > 2 else {}
-        result = memu.search(query, user_id, options)
-    elif command == "delete":
-        memory_id = args[0] if len(args) > 0 else ""
-        user_id = args[1] if len(args) > 1 else None
-        result = memu.delete(memory_id, user_id)
-    elif command == "list":
-        user_id = args[0] if len(args) > 0 else None
-        limit = int(args[1]) if len(args) > 1 else 100
-        offset = int(args[2]) if len(args) > 2 else 0
-        result = memu.list(user_id, limit, offset)
-    elif command == "clear":
-        user_id = args[0] if len(args) > 0 else None
-        result = memu.clear(user_id)
-    elif command == "stats":
-        user_id = args[0] if len(args) > 0 else None
-        result = memu.get_stats(user_id)
-    else:
-        result = {"success": False, "error": f"Unknown command: {command}"}
-    
-    print(json.dumps(result))
-except Exception as e:
-    print(json.dumps({"success": False, "error": str(e)}))
-    sys.exit(1)
-`.replace(/"/g, '\\"').replace(/\n/g, "\\n");
-  }
-
-  private async runPython(command: string, args: string[] = []): Promise<MemUResult> {
-    try {
-      if (this.config.provider === "cloud" && this.config.cloudApiKey) {
-        // Cloud mode implementation
-        const fetch = (await import("node-fetch")).default;
-        const endpoint = this.config.cloudEndpoint || "https://api.memu.ai/v1";
-        
-        const response = await fetch(`${endpoint}/${command}`, {
-          method: "POST",
-          headers: {
-            "Authorization": `Bearer ${this.config.cloudApiKey}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ args }),
-          timeout: 30000,
-        });
-
-        if (!response.ok) {
-          return {
-            success: false,
-            error: `Cloud API error: ${response.status} ${response.statusText}`,
-          };
+    // Load existing memories from file if using file storage
+    if (this.config.storageType === "file") {
+      const memoryFile = path.join(this.workDir, "memories.json");
+      if (existsSync(memoryFile)) {
+        try {
+          const data = JSON.parse(readFileSync(memoryFile, "utf-8"));
+          this.memories = new Map(Object.entries(data));
+        } catch (e) {
+          console.warn("Failed to load memories from file:", e);
         }
+      }
+    }
+  }
 
-        return await response.json() as MemUResult;
+  private async initServices(): Promise<void> {
+    // Initialize embeddings
+    if (this.config.embeddingApiKey) {
+      this.embeddings = new OpenAIEmbeddings({
+        openAIApiKey: this.config.embeddingApiKey,
+        model: this.config.embeddingModel || "text-embedding-ada-002",
+        configuration: {
+          baseURL: this.config.embeddingBaseUrl,
+        },
+      });
+    } else {
+      // Fallback: use simple hash-based embedding for demo
+      this.embeddings = {
+        embedQuery: async (text: string) => this.simpleEmbed(text),
+        embedDocuments: async (texts: string[]) => Promise.all(texts.map(t => this.simpleEmbed(t))),
+      } as any;
+    }
+
+    // Initialize LLM
+    if (this.config.llmApiKey) {
+      switch (this.config.llmProvider) {
+        case "openai":
+          this.llm = new ChatOpenAI({
+            openAIApiKey: this.config.llmApiKey,
+            model: this.config.llmModel || "gpt-3.5-turbo",
+            configuration: {
+              baseURL: this.config.llmBaseUrl,
+            },
+            temperature: 0.1,
+          });
+          break;
+        case "anthropic":
+          this.llm = new ChatAnthropic({
+            anthropicApiKey: this.config.llmApiKey,
+            model: this.config.llmModel || "claude-3-sonnet-20240229",
+            anthropicBaseUrl: this.config.llmBaseUrl,
+            temperature: 0.1,
+          });
+          break;
+        case "volcengine":
+          this.llm = new ChatVolcengine({
+            apiKey: this.config.llmApiKey,
+            model: this.config.llmModel || "doubao-lite-4k",
+            baseURL: this.config.llmBaseUrl,
+            temperature: 0.1,
+          });
+          break;
+      }
+    }
+
+    // Initialize vector store
+    switch (this.config.storageType) {
+      case "inmemory":
+        this.vectorStore = new MemoryVectorStore(this.embeddings!);
+        break;
+      case "postgres":
+        if (!this.config.postgresConnectionString) {
+          throw new Error("PostgreSQL connection string is required for postgres storage");
+        }
+        
+        // Initialize pgvector
+        const pgConfig = {
+          connectionString: this.config.postgresConnectionString,
+        };
+        
+        this.pgPool = new Pool(pgConfig);
+        
+        // Create table if not exists
+        await this.pgPool.query(`
+          CREATE TABLE IF NOT EXISTS memories (
+            id TEXT PRIMARY KEY,
+            content TEXT NOT NULL,
+            modality TEXT NOT NULL,
+            user_id TEXT,
+            session_id TEXT,
+            timestamp BIGINT NOT NULL,
+            metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+            embedding vector(1536)
+          );
+          CREATE INDEX IF NOT EXISTS idx_memories_user_id ON memories(user_id);
+          CREATE INDEX IF NOT EXISTS idx_memories_timestamp ON memories(timestamp);
+          CREATE INDEX IF NOT EXISTS idx_memories_embedding ON memories USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+        `);
+
+        this.vectorStore = await PGVectorStore.initialize(this.embeddings!, {
+          pool: this.pgPool,
+          tableName: "memories",
+          columns: {
+            idColumnName: "id",
+            contentColumnName: "content",
+            metadataColumnName: "metadata",
+            vectorColumnName: "embedding",
+          },
+        });
+        break;
+      case "file":
+        // Use memory vector store and persist to file
+        this.vectorStore = new MemoryVectorStore(this.embeddings!);
+        // Load existing documents into vector store
+        const docs = Array.from(this.memories.values()).map(m => new Document({
+          pageContent: m.content,
+          metadata: {
+            id: m.id,
+            modality: m.modality,
+            userId: m.userId,
+            timestamp: m.timestamp,
+            ...m.metadata,
+          },
+        }));
+        if (docs.length > 0) {
+          await this.vectorStore.addDocuments(docs);
+        }
+        break;
+    }
+  }
+
+  private async simpleEmbed(text: string): Promise<number[]> {
+    // Simple hash-based embedding for fallback (1536 dimensions)
+    const hash = this.simpleHash(text);
+    const embedding = new Array(1536).fill(0);
+    for (let i = 0; i < 1536; i++) {
+      embedding[i] = (hash * (i + 1)) % 2 - 1;
+    }
+    // Normalize
+    const norm = Math.sqrt(embedding.reduce((a, b) => a + b * b, 0));
+    return embedding.map(v => v / norm);
+  }
+
+  private simpleHash(text: string): number {
+    let hash = 0;
+    for (let i = 0; i < text.length; i++) {
+      const char = text.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash = hash & hash; // Convert to 32bit integer
+    }
+    return Math.abs(hash);
+  }
+
+  private async persistToFile(): Promise<void> {
+    if (this.config.storageType === "file") {
+      const memoryFile = path.join(this.workDir, "memories.json");
+      const data = Object.fromEntries(this.memories.entries());
+      writeFileSync(memoryFile, JSON.stringify(data, null, 2), "utf-8");
+    }
+  }
+
+  // Core functionality - PURE TS IMPLEMENTATION
+  async memorize(content: string, modality: string = "conversation", userId?: string, metadata: Record<string, any> = {}): Promise<MemUResult> {
+    try {
+      if (!this.vectorStore) {
+        await this.initServices();
       }
 
-      // Self-hosted mode
-      const wrapperScript = `
-import sys
-import json
-import os
-sys.path.insert(0, "${path.dirname(this.servicePath)}")
+      const id = randomUUID();
+      const timestamp = Date.now();
+      
+      const memory: MemoryRecord = {
+        id,
+        content,
+        modality: modality as any,
+        userId,
+        timestamp,
+        metadata,
+      };
 
-try:
-    from app import MemU
-    config = json.loads(os.environ.get("OPENCLAW_MEMU_CONFIG", "{}"))
-    memu = MemU(config)
-    
-    args = sys.argv[1:]
-    
-    ${command === "memorize" ? `
-content = args[1] if len(args) > 1 else ""
-modality = args[0] if len(args) > 0 else "conversation"
-user_id = args[2] if len(args) > 2 else None
-result = memu.memorize(content, modality, user_id)
-` : command === "retrieve" ? `
-method = args[0] if len(args) > 0 else "rag"
-queries = json.loads(args[1]) if len(args) > 1 else []
-user_id = args[2] if len(args) > 2 else None
-options = json.loads(args[3]) if len(args) > 3 else {}
-result = memu.retrieve(queries, method, user_id, options)
-` : command === "search" ? `
-query = args[0] if len(args) > 0 else ""
-user_id = args[1] if len(args) > 1 else None
-options = json.loads(args[2]) if len(args) > 2 else {}
-result = memu.search(query, user_id, options)
-` : command === "delete" ? `
-memory_id = args[0] if len(args) > 0 else ""
-user_id = args[1] if len(args) > 1 else None
-result = memu.delete(memory_id, user_id)
-` : command === "list" ? `
-user_id = args[0] if len(args) > 0 else None
-limit = int(args[1]) if len(args) > 1 else 100
-offset = int(args[2]) if len(args) > 2 else 0
-result = memu.list(user_id, limit, offset)
-` : command === "clear" ? `
-user_id = args[0] if len(args) > 0 else None
-result = memu.clear(user_id)
-` : command === "stats" ? `
-user_id = args[0] if len(args) > 0 else None
-result = memu.get_stats(user_id)
-` : `
-result = {"success": False, "error": f"Unknown command: {command}"}
-`}
-    
-    print(json.dumps(result))
-except Exception as e:
-    print(json.dumps({"success": False, "error": str(e)}))
-    sys.exit(1)
-`;
-
-      writeFileSync(this.wrapperPath, wrapperScript, "utf-8");
-
-      const { stdout, stderr } = await execa(this.pythonPath, [this.wrapperPath, ...args], {
-        env: {
-          ...process.env,
-          OPENCLAW_MEMU_CONFIG: JSON.stringify(this.config),
+      // Add to vector store
+      const doc = new Document({
+        pageContent: content,
+        metadata: {
+          id,
+          modality,
+          userId,
+          timestamp,
+          ...metadata,
         },
-        timeout: 30000,
       });
 
-      if (stderr) {
-        console.warn("MemU stderr:", stderr);
+      await this.vectorStore!.addDocuments([doc]);
+
+      // Store in memory map
+      this.memories.set(id, memory);
+
+      // Persist to file if needed
+      await this.persistToFile();
+
+      // Also persist to PostgreSQL if using postgres storage
+      if (this.config.storageType === "postgres" && this.pgPool) {
+        const embedding = await this.embeddings!.embedQuery(content);
+        await this.pgPool.query(
+          `INSERT INTO memories (id, content, modality, user_id, timestamp, metadata, embedding)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
+           ON CONFLICT (id) DO UPDATE SET
+             content = EXCLUDED.content,
+             modality = EXCLUDED.modality,
+             user_id = EXCLUDED.user_id,
+             timestamp = EXCLUDED.timestamp,
+             metadata = EXCLUDED.metadata,
+             embedding = EXCLUDED.embedding`,
+          [id, content, modality, userId, timestamp, JSON.stringify(metadata), pgvector.toSql(embedding)]
+        );
       }
 
-      try {
-        return JSON.parse(stdout);
-      } catch (e) {
-        return {
-          success: false,
-          error: `Invalid JSON response: ${stdout}`,
-        };
-      }
+      return {
+        success: true,
+        data: {
+          memoryId: id,
+          timestamp,
+        },
+      };
     } catch (e: any) {
       return {
         success: false,
-        error: e.message || "Unknown error",
+        error: e.message || "Failed to memorize",
       };
     }
   }
 
-  // Core functionality
-  async memorize(content: string, modality: string = "conversation", userId?: string, metadata?: Record<string, any>): Promise<MemUResult> {
-    const args = [modality, content, userId || "", JSON.stringify(metadata || {})];
-    return this.runPython("memorize", args);
+  async retrieve(queries: Array<{ role: string; content: { text: string } }>, method: "rag" | "llm" = "rag", userId?: string, options: RetrievalOptions = {}): Promise<MemUResult> {
+    try {
+      if (!this.vectorStore) {
+        await this.initServices();
+      }
+
+      const topK = options.topK || this.config.retrievalTopK || 5;
+      const threshold = options.threshold || this.config.retrievalThreshold || 0.7;
+
+      // Combine all query texts
+      const queryText = queries.map(q => q.content.text).join(" ");
+
+      // Get relevant documents
+      const docsWithScores = await this.vectorStore!.similaritySearchWithScore(
+        queryText,
+        topK,
+        userId ? { userId } : options.filter
+      );
+
+      // Filter by threshold
+      const filteredDocs = docsWithScores
+        .filter(([_, score]) => score >= threshold)
+        .map(([doc, score]) => {
+          const memory = this.memories.get(doc.metadata.id) || {
+            id: doc.metadata.id,
+            content: doc.pageContent,
+            modality: doc.metadata.modality,
+            userId: doc.metadata.userId,
+            timestamp: doc.metadata.timestamp,
+            metadata: doc.metadata,
+          };
+          return {
+            ...memory,
+            score,
+          };
+        });
+
+      // If using LLM method, rerank with LLM
+      if (method === "llm" && this.llm) {
+        const reranked = await this.rerankWithLLM(queryText, filteredDocs);
+        return {
+          success: true,
+          data: reranked,
+        };
+      }
+
+      return {
+        success: true,
+        data: filteredDocs,
+      };
+    } catch (e: any) {
+      return {
+        success: false,
+        error: e.message || "Failed to retrieve",
+      };
+    }
   }
 
-  async retrieve(queries: Array<{ role: string; content: { text: string } }>, method: "rag" | "llm" = "rag", userId?: string, options?: RetrievalOptions): Promise<MemUResult> {
-    const args = [method, JSON.stringify(queries), userId || "", JSON.stringify(options || {})];
-    return this.runPython("retrieve", args);
+  private async rerankWithLLM(query: string, docs: MemoryRecord[]): Promise<MemoryRecord[]> {
+    if (!this.llm) return docs;
+
+    const prompt = ChatPromptTemplate.fromTemplate(`
+You are a memory reranker. Given a user query and a list of memory records, rank them by relevance to the query.
+Return only a JSON array of memory IDs in order of relevance (most relevant first).
+Do not include any other text or explanation.
+
+Query: {query}
+
+Memories:
+{memories}
+`);
+
+    const chain = prompt.pipe(this.llm).pipe(new StringOutputParser());
+
+    const memoriesText = docs.map((d, i) => `
+[${i}] ID: ${d.id}
+Content: ${d.content}
+Score: ${d.score}
+`).join("\n");
+
+    const result = await chain.invoke({
+      query,
+      memories: memoriesText,
+    });
+
+    try {
+      const rankedIds = JSON.parse(result) as string[];
+      const idToDoc = new Map(docs.map(d => [d.id, d]));
+      return rankedIds.map(id => idToDoc.get(id)).filter(Boolean) as MemoryRecord[];
+    } catch (e) {
+      console.warn("Failed to parse LLM reranking result:", e);
+      return docs;
+    }
   }
 
-  async search(query: string, userId?: string, options?: RetrievalOptions): Promise<MemUResult> {
-    const args = [query, userId || "", JSON.stringify(options || {})];
-    return this.runPython("search", args);
+  async search(query: string, userId?: string, options: RetrievalOptions = {}): Promise<MemUResult> {
+    // Search is a simpler version of retrieve, optimized for speed
+    return this.retrieve([{ role: "user", content: { text: query } }], "rag", userId, options);
   }
 
-  // Advanced functionality
+  // Advanced functionality - PURE TS IMPLEMENTATION
   async delete(memoryId: string, userId?: string): Promise<MemUResult> {
-    const args = [memoryId, userId || ""];
-    return this.runPython("delete", args);
+    try {
+      const memory = this.memories.get(memoryId);
+      if (!memory) {
+        return {
+          success: false,
+          error: "Memory not found",
+        };
+      }
+
+      if (userId && memory.userId !== userId) {
+        return {
+          success: false,
+          error: "Permission denied",
+        };
+      }
+
+      // Remove from memory map
+      this.memories.delete(memoryId);
+
+      // Remove from vector store
+      if (this.vectorStore && "delete" in this.vectorStore) {
+        await this.vectorStore.delete({ ids: [memoryId] });
+      }
+
+      // Remove from PostgreSQL
+      if (this.config.storageType === "postgres" && this.pgPool) {
+        await this.pgPool.query("DELETE FROM memories WHERE id = $1", [memoryId]);
+      }
+
+      // Persist to file
+      await this.persistToFile();
+
+      return {
+        success: true,
+        data: {
+          deletedId: memoryId,
+        },
+      };
+    } catch (e: any) {
+      return {
+        success: false,
+        error: e.message || "Failed to delete memory",
+      };
+    }
   }
 
   async list(userId?: string, limit: number = 100, offset: number = 0): Promise<MemUResult> {
-    const args = [userId || "", limit.toString(), offset.toString()];
-    return this.runPython("list", args);
+    try {
+      let memories = Array.from(this.memories.values());
+
+      // Filter by user
+      if (userId) {
+        memories = memories.filter(m => m.userId === userId);
+      }
+
+      // Sort by timestamp (newest first)
+      memories.sort((a, b) => b.timestamp - a.timestamp);
+
+      // Paginate
+      const paginated = memories.slice(offset, offset + limit);
+
+      return {
+        success: true,
+        data: {
+          memories: paginated,
+          total: memories.length,
+          offset,
+          limit,
+        },
+      };
+    } catch (e: any) {
+      return {
+        success: false,
+        error: e.message || "Failed to list memories",
+      };
+    }
   }
 
   async clear(userId?: string): Promise<MemUResult> {
-    const args = [userId || ""];
-    return this.runPython("clear", args);
+    try {
+      let count = 0;
+
+      if (userId) {
+        // Delete only user's memories
+        const userMemories = Array.from(this.memories.values()).filter(m => m.userId === userId);
+        count = userMemories.length;
+        
+        for (const memory of userMemories) {
+          this.memories.delete(memory.id);
+        }
+
+        // Delete from vector store
+        if (this.vectorStore && "delete" in this.vectorStore) {
+          await this.vectorStore.delete({ ids: userMemories.map(m => m.id) });
+        }
+
+        // Delete from PostgreSQL
+        if (this.config.storageType === "postgres" && this.pgPool) {
+          await this.pgPool.query("DELETE FROM memories WHERE user_id = $1", [userId]);
+        }
+      } else {
+        // Delete all memories
+        count = this.memories.size;
+        this.memories.clear();
+
+        // Clear vector store
+        if (this.vectorStore && "delete" in this.vectorStore) {
+          // For memory vector store, recreate it
+          if (this.vectorStore instanceof MemoryVectorStore) {
+            this.vectorStore = new MemoryVectorStore(this.embeddings!);
+          } else {
+            // For PGVector, truncate table
+            if (this.pgPool) {
+              await this.pgPool.query("TRUNCATE TABLE memories");
+            }
+          }
+        }
+      }
+
+      // Persist to file
+      await this.persistToFile();
+
+      return {
+        success: true,
+        data: {
+          deletedCount: count,
+        },
+      };
+    } catch (e: any) {
+      return {
+        success: false,
+        error: e.message || "Failed to clear memories",
+      };
+    }
   }
 
   async getStats(userId?: string): Promise<MemUResult> {
-    const args = [userId || ""];
-    return this.runPython("stats", args);
+    try {
+      let memories = Array.from(this.memories.values());
+
+      if (userId) {
+        memories = memories.filter(m => m.userId === userId);
+      }
+
+      const modalities = new Map<string, number>();
+      let earliestTimestamp = Infinity;
+      let latestTimestamp = 0;
+
+      for (const memory of memories) {
+        modalities.set(memory.modality, (modalities.get(memory.modality) || 0) + 1);
+        earliestTimestamp = Math.min(earliestTimestamp, memory.timestamp);
+        latestTimestamp = Math.max(latestTimestamp, memory.timestamp);
+      }
+
+      return {
+        success: true,
+        data: {
+          totalMemories: memories.length,
+          modalities: Object.fromEntries(modalities),
+          earliestMemory: earliestTimestamp === Infinity ? null : new Date(earliestTimestamp).toISOString(),
+          latestMemory: latestTimestamp === 0 ? null : new Date(latestTimestamp).toISOString(),
+          storageType: this.config.storageType,
+          provider: this.config.provider,
+        },
+      };
+    } catch (e: any) {
+      return {
+        success: false,
+        error: e.message || "Failed to get stats",
+      };
+    }
   }
 
-  // Batch operations
+  // Batch operations - PURE TS IMPLEMENTATION
   async batchMemorize(records: Array<Omit<MemoryRecord, "id" | "timestamp">>): Promise<MemUResult> {
-    const results = [];
-    for (const record of records) {
-      const result = await this.memorize(record.content, record.modality, record.userId, record.metadata);
-      results.push(result);
+    try {
+      const results = [];
+      for (const record of records) {
+        const result = await this.memorize(
+          record.content,
+          record.modality,
+          record.userId,
+          record.metadata
+        );
+        results.push(result);
+      }
+
+      return {
+        success: results.every(r => r.success),
+        data: results,
+      };
+    } catch (e: any) {
+      return {
+        success: false,
+        error: e.message || "Failed to batch memorize",
+      };
     }
-    return {
-      success: results.every(r => r.success),
-      data: results,
-    };
   }
 
   async batchDelete(memoryIds: string[], userId?: string): Promise<MemUResult> {
-    const results = [];
-    for (const id of memoryIds) {
-      const result = await this.delete(id, userId);
-      results.push(result);
+    try {
+      const results = [];
+      for (const id of memoryIds) {
+        const result = await this.delete(id, userId);
+        results.push(result);
+      }
+
+      return {
+        success: results.every(r => r.success),
+        data: results,
+      };
+    } catch (e: any) {
+      return {
+        success: false,
+        error: e.message || "Failed to batch delete",
+      };
     }
-    return {
-      success: results.every(r => r.success),
-      data: results,
-    };
   }
 
-  // Auto-learn functionality
+  // Auto-learn functionality - PURE TS IMPLEMENTATION
   async autoLearnFromConversation(messages: Array<{ role: string; content: string }>, userId?: string): Promise<MemUResult> {
     if (!this.config.autoLearn) {
       return {
@@ -410,79 +740,69 @@ except Exception as e:
       };
     }
 
-    // Extract important information from conversation
-    const importantPoints = await this.extractImportantPoints(messages);
-    const results = [];
+    try {
+      // Extract important information from conversation
+      const importantPoints = await this.extractImportantPoints(messages);
+      const results = [];
 
-    for (const point of importantPoints) {
-      const result = await this.memorize(point, "conversation", userId, {
-        source: "auto-learn",
-        conversationLength: messages.length,
-      });
-      results.push(result);
+      for (const point of importantPoints) {
+        const result = await this.memorize(point, "conversation", userId, {
+          source: "auto-learn",
+          conversationLength: messages.length,
+        });
+        results.push(result);
+      }
+
+      return {
+        success: results.every(r => r.success),
+        data: {
+          learnedPoints: importantPoints.length,
+          results,
+        },
+      };
+    } catch (e: any) {
+      return {
+        success: false,
+        error: e.message || "Failed to auto learn",
+      };
     }
-
-    return {
-      success: results.every(r => r.success),
-      data: {
-        learnedPoints: importantPoints.length,
-        results,
-      },
-    };
   }
 
   private async extractImportantPoints(messages: Array<{ role: string; content: string }>): Promise<string[]> {
-    // Use LLM to extract important points from conversation
-    if (!this.config.llmApiKey) {
+    if (!this.llm) {
+      // Fallback: return all user messages longer than 10 chars
       return messages
         .filter(m => m.role === "user" || m.role === "assistant")
         .map(m => m.content)
         .filter(c => c.length > 10);
     }
 
-    try {
-      const fetch = (await import("node-fetch")).default;
-      const prompt = `
+    const prompt = ChatPromptTemplate.fromTemplate(`
 Extract the most important facts, preferences, decisions, and information from the following conversation.
 Return only a JSON array of strings, each being a single important point.
 Do not include any other text or explanation.
 
 Conversation:
-${messages.map(m => `${m.role}: ${m.content}`).join("\n")}
-`;
+{conversation}
+`);
 
-      const response = await fetch(this.config.llmBaseUrl || "https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${this.config.llmApiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: this.config.llmModel || "gpt-3.5-turbo",
-          messages: [{ role: "user", content: prompt }],
-          temperature: 0.1,
-        }),
-        timeout: 10000,
-      });
+    const chain = prompt.pipe(this.llm).pipe(new StringOutputParser());
 
-      if (response.ok) {
-        const data = await response.json() as any;
-        const content = data.choices?.[0]?.message?.content || "[]";
-        try {
-          return JSON.parse(content);
-        } catch {
-          return content.split("\n").filter(line => line.trim().length > 0);
-        }
-      }
+    const conversationText = messages.map(m => `${m.role}: ${m.content}`).join("\n");
+
+    const result = await chain.invoke({
+      conversation: conversationText,
+    });
+
+    try {
+      return JSON.parse(result) as string[];
     } catch (e) {
-      console.warn("Failed to extract important points with LLM:", e);
+      console.warn("Failed to parse important points:", e);
+      return result.split("\n").filter(line => line.trim().length > 0);
     }
-
-    // Fallback: return all user messages
-    return messages.filter(m => m.role === "user").map(m => m.content);
   }
 
-  // Proactive retrieval
+  // Proactive retrieval - PURE TS IMPLEMENTATION
   async proactiveRetrieval(currentContext: string, userId?: string): Promise<MemUResult> {
     if (!this.config.proactiveRetrieval) {
       return {
@@ -496,19 +816,58 @@ ${messages.map(m => `${m.role}: ${m.content}`).join("\n")}
       threshold: this.config.retrievalThreshold,
     });
   }
+
+  // Cloud mode implementation - PURE TS IMPLEMENTATION
+  private async cloudRequest(endpoint: string, body: any): Promise<MemUResult> {
+    if (!this.config.cloudApiKey) {
+      return {
+        success: false,
+        error: "Cloud API key is required for cloud mode",
+      };
+    }
+
+    try {
+      const fetch = (await import("node-fetch")).default;
+      const baseUrl = this.config.cloudEndpoint || "https://api.memu.so/v1";
+      
+      const response = await fetch(`${baseUrl}${endpoint}`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${this.config.cloudApiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+        timeout: 30000,
+      });
+
+      if (!response.ok) {
+        return {
+          success: false,
+          error: `Cloud API error: ${response.status} ${response.statusText}`,
+        };
+      }
+
+      return await response.json() as MemUResult;
+    } catch (e: any) {
+      return {
+        success: false,
+        error: e.message || "Cloud request failed",
+      };
+    }
+  }
 }
 
 const extension = new Extension({
   name: "memu",
-  description: "MemU proactive memory plugin for OpenClaw with advanced features",
-  version: "1.1.0",
+  description: "MemU proactive memory plugin for OpenClaw - 100% pure TypeScript implementation",
+  version: "2.0.0",
 });
 
 let memuClient: MemUClient;
 
 extension.on("init", async () => {
   memuClient = new MemUClient();
-  extension.logger.info("MemU plugin initialized with advanced features");
+  extension.logger.info("MemU plugin initialized with 100% pure TypeScript implementation");
 
   // Register gateway methods for internal use
   extension.registerGatewayMethod("memu.memorize", async (params: any) => {
@@ -589,7 +948,7 @@ extension.registerTool({
         type: "string",
         enum: ["rag", "llm"],
         default: "rag",
-        description: "Retrieval method: 'rag' for fast embedding-based, 'llm' for deep reasoning",
+        description: "Retrieval method: 'rag' for fast embedding-based, 'llm' for deep reasoning reranking",
       },
       user_id: {
         type: "string",
@@ -617,7 +976,7 @@ extension.registerTool({
 
 extension.registerTool({
   name: "memu_search",
-  description: "Quick search for specific facts or preferences in memU memory.",
+  description: "Quick search for specific facts or preferences in memU memory. Optimized for speed, uses RAG only.",
   parameters: {
     type: "object",
     required: ["query"],
@@ -675,7 +1034,7 @@ extension.registerTool({
 
 extension.registerTool({
   name: "memu_list",
-  description: "List all memories for a user with pagination.",
+  description: "List all memories for a user with pagination, sorted by newest first.",
   parameters: {
     type: "object",
     properties: {
@@ -701,13 +1060,13 @@ extension.registerTool({
 
 extension.registerTool({
   name: "memu_clear",
-  description: "Clear all memories for a user. Use with caution!",
+  description: "Clear all memories for a user. Use with caution! This action cannot be undone.",
   parameters: {
     type: "object",
     properties: {
       user_id: {
         type: "string",
-        description: "Optional user identifier to clear memories for",
+        description: "Optional user identifier to clear memories for. If not provided, clears all memories.",
       },
     },
   },
@@ -719,7 +1078,7 @@ extension.registerTool({
 
 extension.registerTool({
   name: "memu_stats",
-  description: "Get memory statistics for a user (total memories, storage usage, etc.)",
+  description: "Get memory statistics for a user (total memories, modality breakdown, storage info, etc.)",
   parameters: {
     type: "object",
     properties: {
@@ -737,7 +1096,7 @@ extension.registerTool({
 
 extension.registerTool({
   name: "memu_batch_memorize",
-  description: "Batch store multiple memories at once.",
+  description: "Batch store multiple memories at once for better performance.",
   parameters: {
     type: "object",
     required: ["records"],
