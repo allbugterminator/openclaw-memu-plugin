@@ -1,345 +1,228 @@
 import { randomUUID } from "crypto";
-import { OpenAIEmbeddings } from "@langchain/openai";
-import { PGVectorStore } from "@langchain/community/vectorstores/pgvector";
 import pg from "pg";
-
 const { Pool } = pg;
 
-// Extension Context Types
-type ExtensionConfig = Record<string, any>;
-interface ExtensionContext {
-  config: ExtensionConfig;
-  logger: {
-    info: (...args: any[]) => void;
-    error: (...args: any[]) => void;
-    debug: (...args: any[]) => void;
-  };
-}
+// 全局状态
+let pool: pg.Pool | null = null;
+let initialized = false;
+let config: any = {};
 
-// Document Type - using simple object instead of class
-function createDocument(options: { pageContent: string; metadata?: Record<string, any> }) {
-  return {
-    pageContent: options.pageContent,
-    metadata: options.metadata || {}
-  };
-}
-
-// Simple keyword-based similarity (fallback when no embeddings)
-function simpleKeywordSimilarity(query: string, content: string): number {
-  const queryWords = query.toLowerCase().split(/\s+/);
-  const contentLower = content.toLowerCase();
-  let matches = 0;
-  for (const word of queryWords) {
-    if (contentLower.includes(word)) {
-      matches++;
-    }
+// 简单的伪嵌入生成（1536维，模拟text-embedding-3-small的输出）
+function generateEmbedding(text: string): number[] {
+  const hash = text.split('').reduce((acc, char) => {
+    return char.charCodeAt(0) + ((acc << 5) - acc);
+  }, 0);
+  
+  // 生成1536维随机但稳定的向量
+  const embedding: number[] = [];
+  for (let i = 0; i < 1536; i++) {
+    const seed = hash * (i + 1);
+    const value = Math.abs(Math.sin(seed)) * 2 - 1; // 范围 [-1, 1]
+    embedding.push(parseFloat(value.toFixed(8)));
   }
-  return matches / Math.max(queryWords.length, 1);
+  
+  return embedding;
 }
 
-// Memory Vector Store (In-Memory Fallback) - using factory function
-function createMemoryVectorStore(embeddings: any) {
-  const documents: any[] = [];
-  const vectors: number[][] = [];
-
-  return {
-    documents,
-    vectors,
-
-    async addDocuments(docs: any[]): Promise<string[]> {
-      const ids: string[] = [];
-      for (const doc of docs) {
-        // Generate fake embedding if no embeddings available
-        if (embeddings) {
-          const embedding = await embeddings.embedQuery(doc.pageContent);
-          vectors.push(embedding);
-        } else {
-          // Use simple hash as placeholder vector
-          const hash = doc.pageContent.split('').reduce((a, c) => a + c.charCodeAt(0), 0);
-          vectors.push(Array(1536).fill(0).map((_, i) => Math.sin(hash + i)));
-        }
-        documents.push(doc);
-        ids.push(doc.metadata.id || randomUUID());
-      }
-      return ids;
-    },
-
-    async similaritySearchWithScore(
-      query: string,
-      k: number = 4,
-      filter?: any
-    ): Promise<[any, number][]> {
-      let scores;
-      
-      if (embeddings) {
-        const queryEmbedding = await embeddings.embedQuery(query);
-        scores = vectors.map((vector, idx) => {
-          const doc = documents[idx];
-          if (filter?.userId && doc.metadata.userId !== filter.userId) {
-            return { idx, score: -1 };
-          }
-          const similarity = cosineSimilarity(queryEmbedding, vector);
-          return { idx, score: similarity };
-        });
-      } else {
-        // Fallback to keyword matching
-        scores = documents.map((doc, idx) => {
-          if (filter?.userId && doc.metadata.userId !== filter.userId) {
-            return { idx, score: -1 };
-          }
-          const similarity = simpleKeywordSimilarity(query, doc.pageContent);
-          return { idx, score: similarity };
-        });
-      }
-      
-      const topK = scores
-        .filter((s) => s.score >= 0)
-        .sort((a, b) => b.score - a.score)
-        .slice(0, k);
-      
-      return topK.map(({ idx, score }) => [documents[idx], score]);
-    }
-  };
-}
-
-// Helper function
-function cosineSimilarity(a: number[], b: number[]): number {
-  let dotProduct = 0;
-  let normA = 0;
-  let normB = 0;
-  for (let i = 0; i < a.length; i++) {
-    dotProduct += a[i] * b[i];
-    normA += a[i] * a[i];
-    normB += b[i] * b[i];
-  }
-  return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
-}
-
-// Extension state holder (plain object, not class)
-interface ExtensionState {
-  config: any;
-  context: any;
-  vectorStore: any;
-  embeddings: any;
-  pgPool: any;
-  initialized: boolean;
-}
-
-// Factory function to create extension state
-function createExtension(context: any) {
-  const state: ExtensionState = {
-    config: {
-      provider: "self-hosted",
-      storageType: "postgres",
-      llmProvider: "custom",
-      llmModel: "gpt-4o-mini",
-      embeddingModel: "text-embedding-3-small",
-      chunk_size: 1500,
-      chunk_overlap: 200,
-      ...context.config,
-    },
-    context,
-    vectorStore: null,
-    embeddings: null,
-    pgPool: null,
-    initialized: false
-  };
-  return state;
-}
-
-// Initialize services
-async function initServices(state: ExtensionState) {
-  if (state.initialized) return;
-
-  // Initialize embeddings (optional - fallback to simple text matching)
-  if (!state.embeddings && state.config.llmApiKey) {
-    try {
-      state.embeddings = new OpenAIEmbeddings({
-        apiKey: state.config.llmApiKey,
-        model: state.config.embeddingModel,
-        configuration: {
-          baseURL: state.config.llmBaseUrl,
-        },
-        dimensions: 1536,
-      });
-    } catch (error) {
-      console.warn("Failed to initialize embeddings:", error);
-    }
-  }
-
-  // Always initialize vector store (in-memory fallback works with or without embeddings)
-  if (!state.vectorStore) {
-    if (state.config.storageType === "postgres" && state.config.postgresConnectionString) {
-      try {
-        state.pgPool = new Pool({
-          connectionString: state.config.postgresConnectionString,
-        });
-
-        const client = await state.pgPool.connect();
-        
-        // 启用pgvector扩展
-        await client.query('CREATE EXTENSION IF NOT EXISTS vector');
-        
-        // 删除旧表（如果存在）让PGVectorStore重新创建正确的结构
-        await client.query('DROP TABLE IF EXISTS memories CASCADE');
-        
-        client.release();
-        
-        // Now initialize PGVectorStore with existing table
-        const pgConfig = {
-          postgresConnectionOptions: {
-            connectionString: state.config.postgresConnectionString,
-          },
-          tableName: "memories",
-          columns: {
-            idColumnName: "id",
-            vectorColumnName: "embedding",
-            contentColumnName: "content",
-            metadataColumnName: "metadata",
-          },
-        };
-        
-        // 确保表有正确的列名映射
-        // PGVectorStore需要通过ID列来跟踪记录
-        state.vectorStore = await PGVectorStore.initialize(state.embeddings, {
-          ...pgConfig,
-        });
-        
-        console.log("✅ PostgreSQL with pgvector initialized successfully");
-      } catch (error) {
-        console.error("❌ Failed to connect to PostgreSQL, falling back to in-memory:", error);
-        state.vectorStore = createMemoryVectorStore(state.embeddings);
-      }
-    } else {
-      state.vectorStore = createMemoryVectorStore(state.embeddings);
-      console.log("ℹ️ Using in-memory storage");
-    }
-  }
-
-  state.initialized = true;
-}
-
-// Core methods - bound to state
-async function memorize(this: any, text: string, modality: string = "conversation", userId?: string, metadata: Record<string, any> = {}): Promise<any> {
-  try {
-    await initServices(this);
-
-    const id = randomUUID();
-    const doc = createDocument({
-      pageContent: text,
-      metadata: {
-        id,
-        modality,
-        userId,
-        timestamp: Date.now(),
-        ...metadata,
-      },
-    });
-
-    // 传递ids选项，PGVectorStore需要这个
-    await this.vectorStore.addDocuments([doc], { ids: [id] });
-
-    return {
-      success: true,
-      data: { memoryId: id },
-    };
-  } catch (error) {
-    return {
-      success: false,
-      error: (error as Error).message,
-    };
-  }
-}
-
-async function retrieve(this: any, queryText: string, method: string = "rag", userId?: string, limit: number = 5): Promise<any> {
-  try {
-    await initServices(this);
-
-    const results = await this.vectorStore.similaritySearchWithScore(
-      queryText,
-      limit,
-      userId ? { userId } : undefined
+// 初始化PostgreSQL连接和表结构
+async function initPostgres() {
+  if (pool) return pool;
+  
+  const connectionString = config.postgresConnectionString || "postgresql://postgres:postgres@localhost:5432/memu";
+  pool = new Pool({ connectionString });
+  
+  // 创建表结构
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS memories (
+      id TEXT PRIMARY KEY,
+      content TEXT NOT NULL,
+      metadata JSONB DEFAULT '{}'::JSONB,
+      embedding vector(1536) NOT NULL,
+      timestamp BIGINT NOT NULL
     );
-
-    const memories = results.map(([doc, score]: [any, number]) => ({
-      id: doc.metadata.id,
-      content: doc.pageContent,
-      similarity: score,
-    }));
-
-    return {
-      success: true,
-      data: { memories },
-    };
-  } catch (error) {
-    return {
-      success: false,
-      error: (error as Error).message,
-    };
-  }
+  `);
+  
+  // 创建索引
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS memories_embedding_idx ON memories 
+    USING hnsw (embedding vector_cosine_ops);
+  `);
+  
+  console.log("✅ PostgreSQL initialized successfully");
+  return pool;
 }
 
-async function search(this: any, query: string): Promise<any> {
-  return this.retrieve(query, "search", undefined, 10);
+// 初始化服务
+async function initServices() {
+  if (initialized) return;
+  await initPostgres();
+  initialized = true;
+  console.log("✅ memU with PostgreSQL initialized successfully");
 }
 
-// Register function - entry point for OpenClaw
+// 注册插件
 function register(api: any) {
-  const context = {
-    config: api.config || {},
-    logger: api.logger || console,
-  };
+  config = api.config || {};
 
-  const state = createExtension(context);
-
-  // Bind methods to state
-  const boundMemorize = memorize.bind(state);
-  const boundRetrieve = retrieve.bind(state);
-  const boundSearch = search.bind(state);
-
-  // Activate the extension
-  async function activate() {
-    try {
-      await initServices(state);
-      console.log("✅ memU extension activated successfully");
-    } catch (error) {
-      console.error("❌ Failed to activate memU extension:", error);
-      throw error;
-    }
-  }
-
-  // Register tools
+  // 覆盖memu_memorize工具
   api.registerTool({
     name: "memu_memorize",
-    description: "Store a memory",
+    description: "Store a memory (PostgreSQL implementation)",
     parameters: {
       type: "object",
       required: ["text"],
       properties: {
         text: { type: "string" },
-        metadata: { type: "object" }
+        metadata: { type: "object", default: {} }
       }
     },
-    execute: ({ text, metadata }: any) => boundMemorize(text, "conversation", undefined, metadata)
+    execute: async (a: any, b: any, c: any) => {
+      try {
+        console.log("memu_memorize arguments:", {a, b, c});
+        // 尝试所有可能的参数位置
+        let text = "";
+        let metadata = {};
+        
+        if (a && typeof a === "object") {
+          text = a.text || a.content || "";
+          metadata = a.metadata || a.meta || {};
+        }
+        if (!text && b && typeof b === "object") {
+          text = b.text || b.content || "";
+          metadata = b.metadata || b.meta || {};
+        }
+        if (!text && typeof a === "string") text = a;
+        if (!text && typeof b === "string") text = b;
+        if (!text && typeof c === "string") text = c;
+        
+        if (!text.trim()) {
+          return { 
+            success: false, 
+            error: "text cannot be empty",
+            debug: { args: [a, b, c], text, metadata }
+          };
+        }
+
+        await initServices();
+        const id = randomUUID();
+        const timestamp = Date.now();
+        const embedding = generateEmbedding(text);
+        
+        // 向量格式转换：直接转为PostgreSQL vector支持的格式
+        const embeddingStr = `[${embedding.join(',')}]`;
+        
+        await pool!.query(
+          `INSERT INTO memories (id, content, metadata, embedding, timestamp)
+           VALUES ($1, $2, $3, $4::vector, $5)`,
+          [id, text, JSON.stringify(metadata), embeddingStr, timestamp]
+        );
+
+        return { 
+          success: true, 
+          data: { memoryId: id, message: "Memory stored successfully", storedText: text } 
+        };
+      } catch (error) {
+        console.error("memu_memorize error:", error);
+        return { 
+          success: false, 
+          error: (error as Error).message 
+        };
+      }
+    }
   });
 
+  // 覆盖memu_retrieve工具
   api.registerTool({
     name: "memu_retrieve",
-    description: "Retrieve memories",
+    description: "Retrieve memories (PostgreSQL implementation)",
     parameters: {
       type: "object",
       required: ["query_text"],
       properties: {
         query_text: { type: "string" },
-        limit: { type: "number" }
+        limit: { type: "number", default: 5 },
+        filter: { type: "object", default: {} }
       }
     },
-    execute: ({ query_text, limit }: any) => boundRetrieve(query_text, "rag", undefined, limit || 5)
+    execute: async (a: any, b: any, c: any) => {
+      try {
+        console.log("memu_retrieve arguments:", {a, b, c});
+        // 尝试所有可能的参数位置
+        let queryText = "";
+        let limit = 5;
+        let filter = {};
+        
+        if (a && typeof a === "object") {
+          queryText = a.query_text || a.query || a.content || "";
+          limit = a.limit || limit;
+          filter = a.filter || {};
+        }
+        if (!queryText && b && typeof b === "object") {
+          queryText = b.query_text || b.query || b.content || "";
+          limit = b.limit || limit;
+          filter = b.filter || {};
+        }
+        if (!queryText && typeof a === "string") queryText = a;
+        if (!queryText && typeof b === "string") queryText = b;
+        if (!queryText && typeof c === "string") queryText = c;
+        
+        if (!queryText.trim()) {
+          return { 
+            success: false, 
+            error: "query_text cannot be empty",
+            debug: { args: [a, b, c], queryText, limit, filter }
+          };
+        }
+
+        await initServices();
+        const queryEmbedding = generateEmbedding(queryText);
+        const embeddingStr = `[${queryEmbedding.join(',')}]`;
+        
+        // 构建过滤条件
+        let whereClauses: string[] = [];
+        let queryParams: any[] = [embeddingStr, limit];
+        let paramIndex = 3;
+        
+        for (const [key, value] of Object.entries(filter)) {
+          whereClauses.push(`metadata->>'${key}' = $${paramIndex}`);
+          queryParams.push(value);
+          paramIndex++;
+        }
+        
+        const whereClause = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : "";
+        
+        const result = await pool!.query(
+          `SELECT id, content, metadata, timestamp,
+                  1 - (embedding <=> $1::vector) as similarity
+           FROM memories
+           ${whereClause}
+           ORDER BY embedding <=> $1::vector
+           LIMIT $2`,
+          queryParams
+        );
+
+        return { 
+          success: true, 
+          data: { 
+            memories: result.rows,
+            message: "Memories retrieved successfully",
+            debug: { queryText, filter, count: result.rows.length }
+          } 
+        };
+      } catch (error) {
+        console.error("memu_retrieve error:", error);
+        return { 
+          success: false, 
+          error: (error as Error).message 
+        };
+      }
+    }
   });
 
+  // 覆盖memu_search工具
   api.registerTool({
     name: "memu_search",
-    description: "Search memories",
+    description: "Search memories (PostgreSQL implementation)",
     parameters: {
       type: "object",
       required: ["query"],
@@ -347,66 +230,104 @@ function register(api: any) {
         query: { type: "string" }
       }
     },
-    execute: ({ query }: any) => boundSearch(query)
+    execute: async (params: any) => {
+      return api.tools.get("memu_retrieve").execute(params);
+    }
   });
 
-  // Expose methods on state for direct access
-  state.memorize = boundMemorize;
-  state.retrieve = boundRetrieve;
-  state.search = boundSearch;
-
-  // Auto-learn hook: store conversation pairs when agent ends
-  if (state.config.autoLearn) {
+  // 自动学习
+  if (config.autoLearn) {
     api.on("agent_end", async (event: any) => {
-      if (!event.success || !event.messages || event.messages.length === 0) {
-        return;
-      }
-
+      if (!event.success || !event.messages) return;
+      
       try {
         let lastUserQuery = "";
+        const agentId = event.agentId || "default";
+        const isolationMode = config.isolationMode || "none";
         
         for (const msg of event.messages) {
-          if (!msg || typeof msg !== "object") continue;
+          if (!msg || !msg.content) continue;
           
-          const role = msg.role;
-          let content = "";
+          const content = typeof msg.content === "string" ? msg.content : 
+            msg.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
           
-          // Extract text content
-          if (typeof msg.content === "string") {
-            content = msg.content;
-          } else if (Array.isArray(msg.content)) {
-            content = msg.content
-              .filter((block: any) => block?.type === "text" && block?.text)
-              .map((block: any) => block.text)
-              .join("\n");
-          }
-          
-          if (!content.trim()) continue;
-          
-          // Pair user query with assistant response
-          if (role === "user") {
-            lastUserQuery = content.trim();
-          } else if (role === "assistant" && lastUserQuery) {
-            const conversationText = `用户查询: ${lastUserQuery}\n助手回复: ${content.trim()}`;
-            await boundMemorize(conversationText, "conversation", undefined, {
-              type: "conversation_pair",
+          if (msg.role === "user") {
+            lastUserQuery = content;
+          } else if (msg.role === "assistant" && lastUserQuery) {
+            const metadata: any = {
+              type: "conversation",
               timestamp: Date.now()
+            };
+            
+            // 根据隔离模式添加对应的隔离字段
+            if (isolationMode.includes("agent") || isolationMode === "agent") {
+              metadata.agentId = agentId;
+            }
+            if (isolationMode.includes("user") || isolationMode === "user") {
+              metadata.userId = event.userId;
+            }
+            if (isolationMode.includes("session") || isolationMode === "session") {
+              metadata.sessionId = event.sessionId;
+            }
+            
+            await api.tools.get("memu_memorize").execute({
+              text: `用户: ${lastUserQuery}\n助手: ${content}`,
+              metadata
             });
-            lastUserQuery = ""; // Reset after pairing
+            
+            lastUserQuery = "";
           }
         }
       } catch (error) {
-        console.error("❌ Auto-learn failed:", error);
+        console.error("Auto-learn error:", error);
       }
     });
   }
 
-  // Activate
-  activate();
-  
-  return state;
+  // 主动检索钩子
+  if (config.proactiveRetrieval) {
+    api.on("agent_start", async (event: any) => {
+      try {
+        const query = event.messages?.filter((m: any) => m.role === "user")
+          .map((m: any) => typeof m.content === "string" ? m.content : 
+            m.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n"))
+          .join("\n");
+        
+        if (!query) return;
+        
+        const agentId = event.agentId || "default";
+        const isolationMode = config.isolationMode || "none";
+        
+        const filter: any = {};
+        if (isolationMode.includes("agent") || isolationMode === "agent") {
+          filter.agentId = agentId;
+        }
+        if (isolationMode.includes("user") || isolationMode === "user") {
+          filter.userId = event.userId;
+        }
+        if (isolationMode.includes("session") || isolationMode === "session") {
+          filter.sessionId = event.sessionId;
+        }
+        
+        const result = await api.tools.get("memu_retrieve").execute({
+          query_text: query,
+          limit: 3,
+          filter
+        });
+        
+        if (result.success && result.data.memories.length > 0) {
+          event.context = event.context || {};
+          event.context.memories = result.data.memories;
+          console.log("✅ Proactively loaded", result.data.memories.length, "memories");
+        }
+      } catch (error) {
+        console.error("Proactive retrieval error:", error);
+      }
+    });
+  }
+
+  // 激活
+  initServices().catch(console.error);
 }
 
-// ES Module exports
-export { register };
 export default register;

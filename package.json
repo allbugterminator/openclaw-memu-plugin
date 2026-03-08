@@ -5,7 +5,9 @@
   "type": "module",
   "main": "dist/index.js",
   "openclaw": {
-    "extensions": ["./dist/index.js"],
+    "extensions": [
+      "./dist/index.js"
+    ],
     "plugin": {
       "id": "memu",
       "name": "memU Memory Integration",
@@ -110,7 +112,7 @@
     "@langchain/openai": "^1.2.12",
     "langchain": "^1.2.30",
     "openai": "^4.0.0",
-    "pg": "^8.11.0",
+    "pg": "^8.20.0",
     "pgvector": "^0.2.1",
     "uuid": "^9.0.0"
   },

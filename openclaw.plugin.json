@@ -62,6 +62,12 @@
         "default": true,
         "description": "Enable proactive context loading"
       },
+      "isolationMode": {
+        "type": "string",
+        "enum": ["none", "user", "agent", "session", "user+agent", "user+session", "agent+session", "full"],
+        "default": "none",
+        "description": "Memory isolation mode"
+      },
       "chunk_size": {
         "type": "number",
         "default": 1500,
@@ -112,5 +118,43 @@
     "chunk_size": { "type": "number" },
     "chunk_overlap": { "type": "number" },
     "auto_split_threshold": { "type": "number" }
-  }
+  },
+  "tools": [
+    {
+      "name": "memu_memorize",
+      "description": "Store a memory",
+      "parameters": {
+        "type": "object",
+        "required": ["text"],
+        "properties": {
+          "text": { "type": "string", "description": "Memory content to store" },
+          "metadata": { "type": "object", "description": "Additional metadata for the memory", "default": {} }
+        }
+      }
+    },
+    {
+      "name": "memu_retrieve",
+      "description": "Retrieve memories based on query",
+      "parameters": {
+        "type": "object",
+        "required": ["query_text"],
+        "properties": {
+          "query_text": { "type": "string", "description": "Query text to search memories for" },
+          "limit": { "type": "number", "description": "Maximum number of results to return", "default": 5 },
+          "filter": { "type": "object", "description": "Filter memories by metadata fields", "default": {} }
+        }
+      }
+    },
+    {
+      "name": "memu_search",
+      "description": "Search memories (alias for memu_retrieve)",
+      "parameters": {
+        "type": "object",
+        "required": ["query"],
+        "properties": {
+          "query": { "type": "string", "description": "Search query" }
+        }
+      }
+    }
+  ]
 }
