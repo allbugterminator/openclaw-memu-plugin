@@ -1,27 +1,58 @@
 import { randomUUID } from "crypto";
 import pg from "pg";
 const { Pool } = pg;
+import fetch from "node-fetch";
 
 // 全局状态
 let pool: pg.Pool | null = null;
 let initialized = false;
 let config: any = {};
 
-// 简单的伪嵌入生成（1536维，模拟text-embedding-3-small的输出）
-function generateEmbedding(text: string): number[] {
-  const hash = text.split('').reduce((acc, char) => {
-    return char.charCodeAt(0) + ((acc << 5) - acc);
-  }, 0);
-  
-  // 生成1536维随机但稳定的向量
-  const embedding: number[] = [];
-  for (let i = 0; i < 1536; i++) {
-    const seed = hash * (i + 1);
-    const value = Math.abs(Math.sin(seed)) * 2 - 1; // 范围 [-1, 1]
-    embedding.push(parseFloat(value.toFixed(8)));
+// 调用外部向量模型API生成嵌入
+async function generateEmbedding(text: string): Promise<number[]> {
+  // 使用配置的向量模型参数
+  const apiKey = config.llmApiKey || "your-api-key";
+  const baseUrl = config.llmBaseUrl || "http://localhost:8000/v1";
+  const model = config.embeddingModel || "text-embedding-3-small";
+
+  try {
+    const response = await fetch(`${baseUrl}/embeddings`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model: model,
+        input: text.replace(/\n/g, " "),
+        encoding_format: "float"
+      })
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      console.error("Embedding API error:", response.status, error);
+      throw new Error(`Embedding API request failed: ${response.status}`);
+    }
+
+    const data = await response.json() as any;
+    return data.data[0].embedding;
+  } catch (error) {
+    console.error("Failed to generate embedding, falling back to local method:", error);
+    // 降级到本地伪嵌入生成
+    const hash = text.split('').reduce((acc, char) => {
+      return char.charCodeAt(0) + ((acc << 5) - acc);
+    }, 0);
+    
+    const embedding: number[] = [];
+    for (let i = 0; i < 1536; i++) {
+      const seed = hash * (i + 1);
+      const value = Math.abs(Math.sin(seed)) * 2 - 1;
+      embedding.push(parseFloat(value.toFixed(8)));
+    }
+    
+    return embedding;
   }
-  
-  return embedding;
 }
 
 // 初始化PostgreSQL连接和表结构
@@ -76,7 +107,7 @@ function register(api: any) {
         metadata: { type: "object", default: {} }
       }
     },
-    execute: async (a: any, b: any, c: any) => {
+    execute: async (a: any, b: any, c: any): Promise<any> => {
       try {
         console.log("memu_memorize arguments:", {a, b, c});
         // 尝试所有可能的参数位置
@@ -106,7 +137,7 @@ function register(api: any) {
         await initServices();
         const id = randomUUID();
         const timestamp = Date.now();
-        const embedding = generateEmbedding(text);
+        const embedding = await generateEmbedding(text);
         
         // 向量格式转换：直接转为PostgreSQL vector支持的格式
         const embeddingStr = `[${embedding.join(',')}]`;
@@ -144,7 +175,7 @@ function register(api: any) {
         filter: { type: "object", default: {} }
       }
     },
-    execute: async (a: any, b: any, c: any) => {
+    execute: async (a: any, b: any, c: any): Promise<any> => {
       try {
         console.log("memu_retrieve arguments:", {a, b, c});
         // 尝试所有可能的参数位置
@@ -175,7 +206,7 @@ function register(api: any) {
         }
 
         await initServices();
-        const queryEmbedding = generateEmbedding(queryText);
+        const queryEmbedding = await generateEmbedding(queryText);
         const embeddingStr = `[${queryEmbedding.join(',')}]`;
         
         // 构建过滤条件
@@ -237,7 +268,7 @@ function register(api: any) {
 
   // 自动学习
   if (config.autoLearn) {
-    api.on("agent_end", async (event: any) => {
+    api.on("agent_end", async (event: any): Promise<void> => {
       if (!event.success || !event.messages) return;
       
       try {
@@ -286,7 +317,7 @@ function register(api: any) {
 
   // 主动检索钩子
   if (config.proactiveRetrieval) {
-    api.on("agent_start", async (event: any) => {
+    api.on("agent_start", async (event: any): Promise<void> => {
       try {
         const query = event.messages?.filter((m: any) => m.role === "user")
           .map((m: any) => typeof m.content === "string" ? m.content : 
