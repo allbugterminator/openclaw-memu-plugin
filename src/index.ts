@@ -3,10 +3,54 @@ import pg from "pg";
 const { Pool } = pg;
 import fetch from "node-fetch";
 
-// 全局状态
+// 配置
+const config = {
+  storageType: "postgres",
+  postgresConnectionString: "postgresql://postgres:postgres@localhost:5432/memu",
+  autoLearn: true,
+  proactiveRetrieval: true,
+  isolationMode: "agent",
+  llmApiKey: "",
+  llmBaseUrl: "",
+  embeddingModel: "text-embedding-3-small"
+};
+
+// PostgreSQL连接池
 let pool: pg.Pool | null = null;
-let initialized = false;
-let config: any = {};
+
+// 初始化PostgreSQL
+async function initPostgres() {
+  if (pool) return;
+  
+  pool = new Pool({
+    connectionString: config.postgresConnectionString,
+  });
+
+  // 创建表（如果不存在）
+  await pool.query(`
+    CREATE EXTENSION IF NOT EXISTS vector;
+    
+    CREATE TABLE IF NOT EXISTS memories (
+      id UUID PRIMARY KEY,
+      content TEXT NOT NULL,
+      metadata JSONB DEFAULT '{}',
+      embedding vector(1536),
+      timestamp BIGINT NOT NULL
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_memories_timestamp ON memories(timestamp);
+    CREATE INDEX IF NOT EXISTS idx_memories_metadata ON memories USING GIN(metadata);
+  `);
+  
+  console.log("✅ memU with PostgreSQL initialized successfully");
+}
+
+// 初始化服务
+async function initServices() {
+  if (config.storageType === "postgres") {
+    await initPostgres();
+  }
+}
 
 // 调用外部向量模型API生成嵌入
 async function generateEmbedding(text: string): Promise<number[]> {
@@ -55,45 +99,89 @@ async function generateEmbedding(text: string): Promise<number[]> {
   }
 }
 
-// 初始化PostgreSQL连接和表结构
-async function initPostgres() {
-  if (pool) return pool;
-  
-  const connectionString = config.postgresConnectionString || "postgresql://postgres:postgres@localhost:5432/memu";
-  pool = new Pool({ connectionString });
-  
-  // 创建表结构
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS memories (
-      id TEXT PRIMARY KEY,
-      content TEXT NOT NULL,
-      metadata JSONB DEFAULT '{}'::JSONB,
-      embedding vector(1536) NOT NULL,
-      timestamp BIGINT NOT NULL
+// 内部存储记忆函数
+async function storeMemory(text: string, metadata: any = {}): Promise<any> {
+  try {
+    if (!text.trim()) {
+      return { success: false, error: "text cannot be empty" };
+    }
+
+    await initServices();
+    const id = randomUUID();
+    const timestamp = Date.now();
+    const embedding = await generateEmbedding(text);
+    
+    // 向量格式转换：直接转为PostgreSQL vector支持的格式
+    const embeddingStr = `[${embedding.join(',')}]`;
+    
+    await pool!.query(
+      `INSERT INTO memories (id, content, metadata, embedding, timestamp)
+       VALUES ($1, $2, $3, $4::vector, $5)`,
+      [id, text, JSON.stringify(metadata), embeddingStr, timestamp]
     );
-  `);
-  
-  // 创建索引
-  await pool.query(`
-    CREATE INDEX IF NOT EXISTS memories_embedding_idx ON memories 
-    USING hnsw (embedding vector_cosine_ops);
-  `);
-  
-  console.log("✅ PostgreSQL initialized successfully");
-  return pool;
+
+    return { 
+      success: true, 
+      data: { memoryId: id, message: "Memory stored successfully", storedText: text } 
+    };
+  } catch (error) {
+    console.error("storeMemory error:", error);
+    return { success: false, error: (error as Error).message };
+  }
 }
 
-// 初始化服务
-async function initServices() {
-  if (initialized) return;
-  await initPostgres();
-  initialized = true;
-  console.log("✅ memU with PostgreSQL initialized successfully");
+// 内部检索记忆函数
+async function retrieveMemories(queryText: string, limit: number = 5, filter: any = {}): Promise<any> {
+  try {
+    if (!queryText.trim()) {
+      return { success: false, error: "query_text cannot be empty" };
+    }
+
+    await initServices();
+    const queryEmbedding = await generateEmbedding(queryText);
+    const embeddingStr = `[${queryEmbedding.join(',')}]`;
+    
+    // 构建过滤条件
+    let filterClause = "";
+    const filterParams: any[] = [];
+    
+    if (filter && Object.keys(filter).length > 0) {
+      const conditions = Object.entries(filter).map(([key, value], index) => {
+        filterParams.push(value);
+        return `metadata->>'${key}' = $${index + 3}`;
+      });
+      filterClause = "AND " + conditions.join(" AND ");
+    }
+    
+    const result = await pool!.query(
+      `SELECT id, content, metadata, timestamp,
+              1 - (embedding <=> $1::vector) as similarity
+       FROM memories
+       WHERE 1=1 ${filterClause}
+       ORDER BY embedding <=> $1::vector
+       LIMIT $2`,
+      [embeddingStr, limit, ...filterParams]
+    );
+
+    return { 
+      success: true, 
+      data: { 
+        memories: result.rows,
+        count: result.rows.length
+      } 
+    };
+  } catch (error) {
+    console.error("retrieveMemories error:", error);
+    return { success: false, error: (error as Error).message };
+  }
 }
 
-// 注册插件
+// 插件注册函数
 function register(api: any) {
-  config = api.config || {};
+  // 加载配置
+  if (api.pluginConfig) {
+    Object.assign(config, api.pluginConfig);
+  }
 
   // 覆盖memu_memorize工具
   api.registerTool({
@@ -108,57 +196,24 @@ function register(api: any) {
       }
     },
     execute: async (a: any, b: any, c: any): Promise<any> => {
-      try {
-        console.log("memu_memorize arguments:", {a, b, c});
-        // 尝试所有可能的参数位置
-        let text = "";
-        let metadata = {};
-        
-        if (a && typeof a === "object") {
-          text = a.text || a.content || "";
-          metadata = a.metadata || a.meta || {};
-        }
-        if (!text && b && typeof b === "object") {
-          text = b.text || b.content || "";
-          metadata = b.metadata || b.meta || {};
-        }
-        if (!text && typeof a === "string") text = a;
-        if (!text && typeof b === "string") text = b;
-        if (!text && typeof c === "string") text = c;
-        
-        if (!text.trim()) {
-          return { 
-            success: false, 
-            error: "text cannot be empty",
-            debug: { args: [a, b, c], text, metadata }
-          };
-        }
-
-        await initServices();
-        const id = randomUUID();
-        const timestamp = Date.now();
-        const embedding = await generateEmbedding(text);
-        
-        // 向量格式转换：直接转为PostgreSQL vector支持的格式
-        const embeddingStr = `[${embedding.join(',')}]`;
-        
-        await pool!.query(
-          `INSERT INTO memories (id, content, metadata, embedding, timestamp)
-           VALUES ($1, $2, $3, $4::vector, $5)`,
-          [id, text, JSON.stringify(metadata), embeddingStr, timestamp]
-        );
-
-        return { 
-          success: true, 
-          data: { memoryId: id, message: "Memory stored successfully", storedText: text } 
-        };
-      } catch (error) {
-        console.error("memu_memorize error:", error);
-        return { 
-          success: false, 
-          error: (error as Error).message 
-        };
+      console.log("memu_memorize arguments:", {a, b, c});
+      // 尝试所有可能的参数位置
+      let text = "";
+      let metadata = {};
+      
+      if (a && typeof a === "object") {
+        text = a.text || a.content || "";
+        metadata = a.metadata || a.meta || {};
       }
+      if (!text && b && typeof b === "object") {
+        text = b.text || b.content || "";
+        metadata = b.metadata || b.meta || {};
+      }
+      if (!text && typeof a === "string") text = a;
+      if (!text && typeof b === "string") text = b;
+      if (!text && typeof c === "string") text = c;
+      
+      return storeMemory(text, metadata);
     }
   });
 
@@ -176,77 +231,26 @@ function register(api: any) {
       }
     },
     execute: async (a: any, b: any, c: any): Promise<any> => {
-      try {
-        console.log("memu_retrieve arguments:", {a, b, c});
-        // 尝试所有可能的参数位置
-        let queryText = "";
-        let limit = 5;
-        let filter = {};
-        
-        if (a && typeof a === "object") {
-          queryText = a.query_text || a.query || a.content || "";
-          limit = a.limit || limit;
-          filter = a.filter || {};
-        }
-        if (!queryText && b && typeof b === "object") {
-          queryText = b.query_text || b.query || b.content || "";
-          limit = b.limit || limit;
-          filter = b.filter || {};
-        }
-        if (!queryText && typeof a === "string") queryText = a;
-        if (!queryText && typeof b === "string") queryText = b;
-        if (!queryText && typeof c === "string") queryText = c;
-        
-        if (!queryText.trim()) {
-          return { 
-            success: false, 
-            error: "query_text cannot be empty",
-            debug: { args: [a, b, c], queryText, limit, filter }
-          };
-        }
-
-        await initServices();
-        const queryEmbedding = await generateEmbedding(queryText);
-        const embeddingStr = `[${queryEmbedding.join(',')}]`;
-        
-        // 构建过滤条件
-        let whereClauses: string[] = [];
-        let queryParams: any[] = [embeddingStr, limit];
-        let paramIndex = 3;
-        
-        for (const [key, value] of Object.entries(filter)) {
-          whereClauses.push(`metadata->>'${key}' = $${paramIndex}`);
-          queryParams.push(value);
-          paramIndex++;
-        }
-        
-        const whereClause = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : "";
-        
-        const result = await pool!.query(
-          `SELECT id, content, metadata, timestamp,
-                  1 - (embedding <=> $1::vector) as similarity
-           FROM memories
-           ${whereClause}
-           ORDER BY embedding <=> $1::vector
-           LIMIT $2`,
-          queryParams
-        );
-
-        return { 
-          success: true, 
-          data: { 
-            memories: result.rows,
-            message: "Memories retrieved successfully",
-            debug: { queryText, filter, count: result.rows.length }
-          } 
-        };
-      } catch (error) {
-        console.error("memu_retrieve error:", error);
-        return { 
-          success: false, 
-          error: (error as Error).message 
-        };
+      console.log("memu_retrieve arguments:", {a, b, c});
+      // 尝试所有可能的参数位置
+      let queryText = "";
+      let limit = 5;
+      let filter = {};
+      
+      if (a && typeof a === "object") {
+        queryText = a.query_text || a.query || "";
+        limit = a.limit || a.top_k || 5;
+        filter = a.filter || {};
       }
+      if (!queryText && b && typeof b === "object") {
+        queryText = b.query_text || b.query || "";
+        limit = b.limit || b.top_k || 5;
+        filter = b.filter || {};
+      }
+      if (!queryText && typeof a === "string") queryText = a;
+      if (!queryText && typeof b === "string") queryText = b;
+      
+      return retrieveMemories(queryText, limit, filter);
     }
   });
 
@@ -261,19 +265,21 @@ function register(api: any) {
         query: { type: "string" }
       }
     },
-    execute: async (params: any) => {
-      return api.tools.get("memu_retrieve").execute(params);
+    execute: async (params: any): Promise<any> => {
+      const query = params.query || params.query_text || "";
+      return retrieveMemories(query, 5, {});
     }
   });
 
-  // 自动学习
+  // 自动学习 - 使用agent_end事件
   if (config.autoLearn) {
-    api.on("agent_end", async (event: any): Promise<void> => {
+    api.on("agent_end", async (event, ctx) => {
+      console.log("[memu] agent_end hook triggered", { success: event.success, messageCount: event.messages?.length });
       if (!event.success || !event.messages) return;
       
       try {
         let lastUserQuery = "";
-        const agentId = event.agentId || "default";
+        const agentId = ctx.agentId || "default";
         const isolationMode = config.isolationMode || "none";
         
         for (const msg of event.messages) {
@@ -295,38 +301,40 @@ function register(api: any) {
               metadata.agentId = agentId;
             }
             if (isolationMode.includes("user") || isolationMode === "user") {
-              metadata.userId = event.userId;
+              metadata.userId = ctx.requesterSenderId;
             }
             if (isolationMode.includes("session") || isolationMode === "session") {
-              metadata.sessionId = event.sessionId;
+              metadata.sessionId = ctx.sessionId;
             }
             
-            await api.tools.get("memu_memorize").execute({
-              text: `用户: ${lastUserQuery}\n助手: ${content}`,
-              metadata
-            });
+            console.log("[memu] Auto-learning conversation:", lastUserQuery.substring(0, 50) + "...");
+            await storeMemory(`用户: ${lastUserQuery}\n助手: ${content}`, metadata);
             
             lastUserQuery = "";
           }
         }
       } catch (error) {
-        console.error("Auto-learn error:", error);
+        console.error("[memu] Auto-learn error:", error);
       }
     });
   }
 
-  // 主动检索钩子
+  // 主动检索钩子 - 使用before_agent_start事件
   if (config.proactiveRetrieval) {
-    api.on("agent_start", async (event: any): Promise<void> => {
+    api.on("before_agent_start", async (event, ctx) => {
+      console.log("[memu] before_agent_start hook triggered");
       try {
         const query = event.messages?.filter((m: any) => m.role === "user")
           .map((m: any) => typeof m.content === "string" ? m.content : 
             m.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n"))
           .join("\n");
         
-        if (!query) return;
+        if (!query) {
+          console.log("[memu] No user query found for proactive retrieval");
+          return;
+        }
         
-        const agentId = event.agentId || "default";
+        const agentId = ctx.agentId || "default";
         const isolationMode = config.isolationMode || "none";
         
         const filter: any = {};
@@ -334,25 +342,27 @@ function register(api: any) {
           filter.agentId = agentId;
         }
         if (isolationMode.includes("user") || isolationMode === "user") {
-          filter.userId = event.userId;
+          filter.userId = ctx.requesterSenderId;
         }
         if (isolationMode.includes("session") || isolationMode === "session") {
-          filter.sessionId = event.sessionId;
+          filter.sessionId = ctx.sessionId;
         }
         
-        const result = await api.tools.get("memu_retrieve").execute({
-          query_text: query,
-          limit: 3,
-          filter
-        });
+        console.log("[memu] Proactive retrieval for query:", query.substring(0, 50) + "...");
+        const result = await retrieveMemories(query, 3, filter);
         
         if (result.success && result.data.memories.length > 0) {
-          event.context = event.context || {};
-          event.context.memories = result.data.memories;
-          console.log("✅ Proactively loaded", result.data.memories.length, "memories");
+          // 将记忆添加到prependContext中
+          const memoriesText = result.data.memories.map((m: any) => m.content).join("\n\n");
+          event.prependContext = event.prependContext ? 
+            `${event.prependContext}\n\n相关记忆:\n${memoriesText}` : 
+            `相关记忆:\n${memoriesText}`;
+          console.log("✅ [memu] Proactively loaded", result.data.memories.length, "memories");
+        } else {
+          console.log("[memu] No relevant memories found");
         }
       } catch (error) {
-        console.error("Proactive retrieval error:", error);
+        console.error("[memu] Proactive retrieval error:", error);
       }
     });
   }
