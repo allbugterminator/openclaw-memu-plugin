@@ -37,6 +37,9 @@ pip install memu-py
 
 # Required for PostgreSQL storage (psycopg2 driver)
 # pip install psycopg2-binary
+
+# Required for external embedding API (node-fetch)
+npm install node-fetch
 ```
 
 ### 2. Install the Plugin
@@ -48,13 +51,18 @@ git clone https://github.com/allbugterminator/openclaw-memu-plugin.git
 # Copy to OpenClaw extensions directory
 cp -r openclaw-memu-plugin ~/.openclaw/extensions/memu
 
+# Build the plugin
+cd ~/.openclaw/extensions/memu
+npm install
+npm run build
+
 # Restart the Gateway
 openclaw gateway restart
 ```
 
 ### 3. Configure
 
-Add to your OpenClaw `config.json`:
+Add to your OpenClaw `openclaw.json`:
 
 ```json
 {
@@ -64,17 +72,150 @@ Add to your OpenClaw `config.json`:
         "enabled": true,
         "config": {
           "provider": "self-hosted",
-          "storageType": "inmemory",
+          "storageType": "postgres",
+          "postgresConnectionString": "postgresql://postgres:postgres@localhost:5432/memu",
           "llmProvider": "openai",
           "llmApiKey": "your-openai-api-key",
           "llmModel": "gpt-4o",
-          "embeddingModel": "text-embedding-3-small"
+          "embeddingModel": "text-embedding-3-small",
+          "embeddingProvider": "openai",
+          "embeddingApiKey": "your-embedding-api-key",
+          "embeddingBaseUrl": "https://api.openai.com/v1",
+          "autoLearn": true,
+          "proactiveRetrieval": true,
+          "isolationMode": "none"
         }
       }
     }
   }
 }
 ```
+
+## Complete Deployment Guide
+
+### Prerequisites
+
+- Node.js 18+ and npm
+- Python 3.13+ (optional, for local memU service)
+- PostgreSQL 16+ with pgvector extension (recommended for production)
+- OpenAI API key or compatible embedding API
+
+### Step 1: Setup PostgreSQL with pgvector
+
+```bash
+# Run PostgreSQL with pgvector in Docker
+docker run -d \
+  --name memu-postgres \
+  -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_DB=memu \
+  -p 5432:5432 \
+  pgvector/pgvector:pg17
+
+# Verify pgvector extension is available
+docker exec memu-postgres psql -U postgres -d memu -c "CREATE EXTENSION IF NOT EXISTS vector;"
+```
+
+### Step 2: Build and Install Plugin
+
+```bash
+# Navigate to plugin directory
+cd ~/.openclaw/extensions/memu
+
+# Install dependencies
+npm install
+
+# Build TypeScript
+npm run build
+
+# Verify build output
+ls -la dist/
+```
+
+### Step 3: Configure OpenClaw
+
+Edit `~/.openclaw/openclaw.json`:
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "memu": {
+        "enabled": true,
+        "config": {
+          "provider": "self-hosted",
+          "storageType": "postgres",
+          "postgresConnectionString": "postgresql://postgres:postgres@localhost:5432/memu",
+          "llmProvider": "openai",
+          "llmApiKey": "sk-your-openai-api-key",
+          "llmModel": "gpt-4o",
+          "embeddingProvider": "openai",
+          "embeddingApiKey": "sk-your-embedding-api-key",
+          "embeddingBaseUrl": "https://api.openai.com/v1",
+          "embeddingModel": "text-embedding-3-small",
+          "embeddingDimensions": 1536,
+          "autoLearn": true,
+          "proactiveRetrieval": true,
+          "isolationMode": "none",
+          "maxContextMemories": 3,
+          "similarityThreshold": 0.7
+        }
+      }
+    }
+  }
+}
+```
+
+### Step 4: Restart Gateway
+
+```bash
+# Restart OpenClaw gateway
+openclaw gateway restart
+
+# Or if using systemd
+sudo systemctl restart openclaw-gateway
+
+# Verify plugin is loaded
+openclaw rpc call memu.status
+```
+
+### Step 5: Verify Installation
+
+```bash
+# Check plugin status
+openclaw rpc call memu.status
+
+# Test memory storage
+openclaw rpc call memu.memorize --params '{"text": "Test memory", "metadata": {"type": "test"}}'
+
+# Test memory retrieval
+openclaw rpc call memu.retrieve --params '{"query_text": "test"}'
+
+# Check PostgreSQL records
+docker exec memu-postgres psql -U postgres -d memu -c "SELECT COUNT(*) FROM memories;"
+```
+
+## Configuration Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `provider` | `cloud` \| `self-hosted` | `self-hosted` | Use memU Cloud or self-hosted |
+| `cloudApiKey` | string | - | memU Cloud API key |
+| `storageType` | `inmemory` \| `postgres` | `postgres` | Storage backend |
+| `postgresConnectionString` | string | - | PostgreSQL connection string |
+| `llmProvider` | `openai` \| `openrouter` \| `custom` | `openai` | LLM provider |
+| `llmApiKey` | string | - | LLM API key |
+| `llmBaseUrl` | string | - | Custom LLM base URL |
+| `llmModel` | string | `gpt-4o` | LLM model |
+| `embeddingProvider` | `openai` \| `custom` | `openai` | Embedding provider |
+| `embeddingApiKey` | string | - | Embedding API key |
+| `embeddingBaseUrl` | string | `https://api.openai.com/v1` | Embedding API base URL |
+| `embeddingModel` | string | `text-embedding-3-small` | Embedding model |
+| `embeddingDimensions` | number | `1536` | Embedding vector dimensions |
+| `autoLearn` | boolean | `true` | Auto-memorize conversations via agent_end hook |
+| `proactiveRetrieval` | boolean | `true` | Enable proactive retrieval via before_agent_start hook |
+| `isolationMode` | `none` \| `agent` \| `user` \| `session` | `none` | Memory isolation mode |
+| `maxContextMemories` | number | `3` | Maximum memories to inject into context |
+| `similarityThreshold` | number | `0.7` | Minimum similarity score for retrieval |
 
 ## Configuration Options
 
@@ -186,22 +327,87 @@ Agent: [memorizes user's preference for vim keybindings]
 ## Architecture
 
 ```
-┌─────────────────┐     ┌─────────────────┐
-│   OpenClaw      │     │     memU        │
-│   Agent         │────►│   Memory        │
-│                 │     │   Service       │
-└─────────────────┘     └─────────────────┘
-        │                       │
-        │ Tools:                │
-        │ - memu_memorize       │ Storage:
-        │ - memu_retrieve       │ - In-Memory
-        │ - memu_search         │ - PostgreSQL
-                               │
-                               │ LLM Providers:
-                               │ - OpenAI
-                               │ - OpenRouter
-                               │ - Custom
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│   OpenClaw      │     │    memU Plugin  │     │  PostgreSQL     │
+│   Agent         │────►│                 │────►│  + pgvector     │
+│                 │     │  ┌───────────┐  │     │                 │
+└─────────────────┘     │  │  Hooks    │  │     └─────────────────┘
+        │               │  │ • agent_end│  │              │
+        │               │  │ • before_ │  │              │
+        │               │  │   agent_start│ │              │
+        │               │  └───────────┘  │              │
+        │               │  ┌───────────┐  │              │
+        │               │  │   Tools   │  │              │
+        │               │  │•memorize  │  │              │
+        │               │  │•retrieve  │  │              │
+        │               │  │•search    │  │              │
+        │               │  └───────────┘  │              │
+        │               │  ┌───────────┐  │              │
+        │               │  │ Embedding │  │              │
+        │               │  │  Service  │◄─┘              │
+        │               │  │(External  │                 │
+        │               │  │ API)       │                 │
+        │               │  └───────────┘                 │
+        │               └─────────────────┘              │
+        │                                                │
+        │ Tools:                                         │
+        │ - memu_memorize ──► Store in PostgreSQL        │
+        │ - memu_retrieve ──► Query with vector search   │
+        │ - memu_search ────► Full-text search           │
 ```
+
+### How It Works
+
+1. **Automatic Learning** (`agent_end` hook):
+   - Triggered after each agent run completes
+   - Automatically stores conversation to PostgreSQL
+   - Generates embedding vector via external API
+
+2. **Proactive Retrieval** (`before_agent_start` hook):
+   - Triggered before each agent run starts
+   - Retrieves relevant memories based on user query
+   - Injects memories into `event.prependContext`
+
+3. **Vector Storage**:
+   - Uses PostgreSQL with pgvector extension
+   - Stores text content + embedding vector + metadata
+   - Supports similarity search with cosine distance
+
+4. **Embedding Generation**:
+   - Calls external API (OpenAI, 88api.chat, etc.)
+   - Falls back to local pseudo-embedding on failure
+   - Configurable model and dimensions
+
+## External Embedding API Configuration
+
+To use external embedding API (e.g., 88api.chat, OpenAI compatible):
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "memu": {
+        "enabled": true,
+        "config": {
+          "provider": "self-hosted",
+          "storageType": "postgres",
+          "postgresConnectionString": "postgresql://postgres:postgres@localhost:5432/memu",
+          "embeddingProvider": "custom",
+          "embeddingApiKey": "your-api-key",
+          "embeddingBaseUrl": "https://api.88api.chat/v1",
+          "embeddingModel": "text-embedding-3-small",
+          "embeddingDimensions": 1536
+        }
+      }
+    }
+  }
+}
+```
+
+The plugin will:
+1. Call external embedding API for vector generation
+2. Fall back to local pseudo-embedding if API fails
+3. Store vectors in PostgreSQL with pgvector
 
 ## Cloud API Configuration
 
@@ -241,7 +447,51 @@ Get your API key at [memu.so](https://memu.so).
 openclaw plugins list
 
 # View gateway logs
-openclaw gateway logs
+tail -f /tmp/openclaw/openclaw-*.log | grep -i memu
+
+# Check for TypeScript compilation errors
+cd ~/.openclaw/extensions/memu
+npm run build
+```
+
+### PostgreSQL connection errors
+
+```bash
+# Verify PostgreSQL is running
+docker ps | grep memu-postgres
+
+# Test connection
+docker exec memu-postgres psql -U postgres -d memu -c "SELECT 1;"
+
+# Check pgvector extension
+docker exec memu-postgres psql -U postgres -d memu -c "SELECT * FROM pg_extension WHERE extname = 'vector';"
+```
+
+### Embedding API errors
+
+If you see `TypeError: Cannot read properties of undefined` or embedding failures:
+
+```bash
+# Check embedding API configuration in openclaw.json
+# Verify embeddingApiKey and embeddingBaseUrl are correct
+
+# Test embedding API directly
+curl -X POST https://api.88api.chat/v1/embeddings \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"input": "test", "model": "text-embedding-3-small"}'
+```
+
+### Hooks not triggering
+
+If `agent_end` or `before_agent_start` hooks are not working:
+
+```bash
+# Check gateway logs for hook registration
+tail -f /tmp/openclaw/openclaw-*.log | grep -E "(hook|agent_end|before_agent_start)"
+
+# Verify plugin is using correct hook API (api.on, not api.registerHook)
+# Check logs for [memu] prefix messages
 ```
 
 ### Python not found
@@ -262,6 +512,19 @@ pip install memu-py
 If you see import errors, ensure memu-py is correctly installed:
 ```bash
 python -c "from memu.app import MemoryService; print('OK')"
+```
+
+### TypeScript compilation errors
+
+```bash
+# Clean and rebuild
+cd ~/.openclaw/extensions/memu
+rm -rf dist/
+npm install
+npm run build
+
+# Check for type errors
+npx tsc --noEmit
 ```
 
 ## Related Projects
