@@ -26,43 +26,112 @@ Traditional AI assistants have no memory - they forget everything after each con
 
 ## Quick Start
 
-### 1. Install Dependencies
+Choose your deployment option:
+
+| Option | Setup Time | Data Persistence | Best For |
+|--------|-----------|------------------|----------|
+| **Cloud** | 2 minutes | memU Cloud | Quick start, prototyping |
+| **PostgreSQL** | 10 minutes | Persistent | Production, self-hosted |
+| **In-Memory** | 5 minutes | None (volatile) | Development, testing |
+
+---
+
+### Option 1: Cloud (Fastest)
+
+No local database required. Uses memU Cloud service.
 
 ```bash
-# Install memU Python package
-pip install memu-py
-
-# Optional: For PostgreSQL storage
-# docker run -d --name memu-postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=memu -p 5432:5432 pgvector/pgvector:pg16
-
-# Required for PostgreSQL storage (psycopg2 driver)
-# pip install psycopg2-binary
-
-# Required for external embedding API (node-fetch)
-npm install node-fetch
-```
-
-### 2. Install the Plugin
-
-```bash
-# Clone this repository
+# 1. Install the Plugin
 git clone https://github.com/allbugterminator/openclaw-memu-plugin.git
-
-# Copy to OpenClaw extensions directory
 cp -r openclaw-memu-plugin ~/.openclaw/extensions/memu
-
-# Build the plugin
 cd ~/.openclaw/extensions/memu
 npm install
 npm run build
 
-# Restart the Gateway
+# 2. Get API Key
+# Visit https://memu.so to get your cloud API key
+
+# 3. Configure (see Cloud config below)
+# 4. Restart
 openclaw gateway restart
 ```
 
-### 3. Configure
+### Option 2: PostgreSQL (Production)
 
-Add to your OpenClaw `openclaw.json`:
+Self-hosted with persistent storage.
+
+```bash
+# 1. Install Dependencies
+pip install memu-py
+pip install psycopg2-binary
+npm install node-fetch
+
+# 2. Start PostgreSQL with pgvector
+docker run -d \
+  --name memu-postgres \
+  -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_DB=memu \
+  -p 5432:5432 \
+  pgvector/pgvector:pg17
+
+# 3. Install the Plugin
+git clone https://github.com/allbugterminator/openclaw-memu-plugin.git
+cp -r openclaw-memu-plugin ~/.openclaw/extensions/memu
+cd ~/.openclaw/extensions/memu
+npm install
+npm run build
+
+# 4. Configure (see PostgreSQL config below)
+# 5. Restart
+openclaw gateway restart
+```
+
+### Option 3: In-Memory (Development)
+
+No database setup required. Data is lost on restart.
+
+```bash
+# 1. Install Dependencies
+pip install memu-py
+npm install node-fetch
+
+# 2. Install the Plugin
+git clone https://github.com/allbugterminator/openclaw-memu-plugin.git
+cp -r openclaw-memu-plugin ~/.openclaw/extensions/memu
+cd ~/.openclaw/extensions/memu
+npm install
+npm run build
+
+# 3. Configure (see In-Memory config below)
+# 4. Restart
+openclaw gateway restart
+```
+
+---
+
+### Configuration Examples
+
+#### Cloud Configuration
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "memu": {
+        "enabled": true,
+        "config": {
+          "provider": "cloud",
+          "cloudApiKey": "your-memu-cloud-api-key",
+          "autoLearn": true,
+          "proactiveRetrieval": true
+        }
+      }
+    }
+  }
+}
+```
+
+#### PostgreSQL Configuration
 
 ```json
 {
@@ -74,13 +143,46 @@ Add to your OpenClaw `openclaw.json`:
           "provider": "self-hosted",
           "storageType": "postgres",
           "postgresConnectionString": "postgresql://postgres:postgres@localhost:5432/memu",
-          "llmProvider": "openai",
-          "llmApiKey": "your-openai-api-key",
-          "llmModel": "gpt-4o",
-          "embeddingModel": "text-embedding-3-small",
-          "embeddingProvider": "openai",
-          "embeddingApiKey": "your-embedding-api-key",
+          "embeddingApiKey": "your-openai-api-key",
           "embeddingBaseUrl": "https://api.openai.com/v1",
+          "embeddingModel": "text-embedding-3-small",
+          "autoLearn": true,
+          "proactiveRetrieval": true
+        }
+      }
+    }
+  }
+}
+```
+
+#### In-Memory Configuration
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "memu": {
+        "enabled": true,
+        "config": {
+          "provider": "self-hosted",
+          "storageType": "inmemory",
+          "embeddingApiKey": "your-openai-api-key",
+          "embeddingBaseUrl": "https://api.openai.com/v1",
+          "embeddingModel": "text-embedding-3-small",
+          "autoLearn": true,
+          "proactiveRetrieval": true
+        }
+      }
+    }
+  }
+}
+```
+
+> ⚠️ **Note:** In-memory storage is volatile - all memories are lost when the Gateway restarts. Use only for development and testing.
+
+---
+
+#### Hook Configuration
           "autoLearn": true,
           "proactiveRetrieval": true,
           "isolationMode": "none"
