@@ -91,6 +91,54 @@ Add to your OpenClaw `openclaw.json`:
 }
 ```
 
+#### Hook Configuration
+
+The plugin uses **lifecycle hooks** to automatically manage memory. These hooks are enabled by default via `autoLearn` and `proactiveRetrieval` settings:
+
+| Config Option | Hook | Description | Default |
+|---------------|------|-------------|---------|
+| `autoLearn` | `agent_end` | Automatically memorize conversations after each agent run | `true` |
+| `proactiveRetrieval` | `before_agent_start` | Retrieve relevant memories before each agent run | `true` |
+
+**Minimal configuration with hooks enabled:**
+```json
+{
+  "plugins": {
+    "entries": {
+      "memu": {
+        "enabled": true,
+        "config": {
+          "storageType": "postgres",
+          "postgresConnectionString": "postgresql://postgres:postgres@localhost:5432/memu",
+          "embeddingApiKey": "your-api-key",
+          "embeddingBaseUrl": "https://api.openai.com/v1",
+          "autoLearn": true,
+          "proactiveRetrieval": true
+        }
+      }
+    }
+  }
+}
+```
+
+**Disable hooks (manual mode):**
+```json
+{
+  "plugins": {
+    "entries": {
+      "memu": {
+        "enabled": true,
+        "config": {
+          "autoLearn": false,
+          "proactiveRetrieval": false
+        }
+      }
+    }
+  }
+}
+```
+When both hooks are disabled, you must manually call `memu_memorize` and `memu_retrieve` tools.
+
 ## Complete Deployment Guide
 
 ### Prerequisites
@@ -377,6 +425,132 @@ Agent: [memorizes user's preference for vim keybindings]
    - Calls external API (OpenAI, 88api.chat, etc.)
    - Falls back to local pseudo-embedding on failure
    - Configurable model and dimensions
+
+## Hooks (Lifecycle Events)
+
+The plugin registers two lifecycle hooks that enable automatic memory management:
+
+### 1. `agent_end` Hook - Automatic Learning
+
+Triggered after each agent run completes. Automatically extracts and stores conversation pairs.
+
+**Event Data:**
+```typescript
+{
+  success: boolean;        // Whether the agent run succeeded
+  messages: Message[];     // Full conversation history
+  result?: any;           // Agent execution result
+}
+```
+
+**Context Data:**
+```typescript
+{
+  agentId: string;              // Current agent ID
+  sessionId: string;            // Session identifier
+  requesterSenderId: string;    // User identifier
+}
+```
+
+**Behavior:**
+- Extracts user query + assistant response pairs from `messages`
+- Generates embedding vector via external API
+- Stores to PostgreSQL with metadata (type, timestamp, isolation fields)
+- Supports isolation modes: `none`, `agent`, `user`, `session`
+
+**Example stored memory:**
+```json
+{
+  "content": "用户: 我喜欢用Python编程\n助手: 好的，我会记住你喜欢Python编程",
+  "metadata": {
+    "type": "conversation",
+    "timestamp": 1709836800000,
+    "agentId": "main",
+    "userId": "user123"
+  }
+}
+```
+
+### 2. `before_agent_start` Hook - Proactive Retrieval
+
+Triggered before each agent run starts. Automatically retrieves relevant memories and injects them into context.
+
+**Event Data:**
+```typescript
+{
+  messages: Message[];        // Incoming messages
+  prependContext?: string;    // Context to prepend (modified by hook)
+}
+```
+
+**Behavior:**
+- Extracts user query from `messages` (filters for role="user")
+- Performs vector similarity search with configured filters
+- Injects retrieved memories into `event.prependContext`
+- Maximum 3 memories retrieved by default (configurable via `maxContextMemories`)
+
+**Example injected context:**
+```
+相关记忆:
+用户: 我喜欢用Python编程
+助手: 好的，我会记住你喜欢Python编程
+
+用户: 我的邮箱是example@email.com
+助手: 已记录你的邮箱地址
+```
+
+### Hook Configuration
+
+Enable/disable hooks via configuration:
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "memu": {
+        "enabled": true,
+        "config": {
+          "autoLearn": true,           // Enable agent_end hook
+          "proactiveRetrieval": true,  // Enable before_agent_start hook
+          "isolationMode": "agent"     // Memory isolation: none | agent | user | session
+        }
+      }
+    }
+  }
+}
+```
+
+### Isolation Modes
+
+Control memory visibility across different contexts:
+
+| Mode | Description | Use Case |
+|------|-------------|----------|
+| `none` | All memories shared globally | Single-user personal assistant |
+| `agent` | Memories isolated by agent ID | Multi-agent system |
+| `user` | Memories isolated by user ID | Multi-user chatbot |
+| `session` | Memories isolated by session | Temporary/ephemeral contexts |
+
+**Metadata fields added based on isolation mode:**
+- `agent` mode: adds `agentId` to memory metadata and filter
+- `user` mode: adds `userId` to memory metadata and filter  
+- `session` mode: adds `sessionId` to memory metadata and filter
+
+### Debugging Hooks
+
+Enable verbose logging to see hook execution:
+
+```bash
+# Check gateway logs for hook activity
+tail -f /tmp/openclaw/openclaw-*.log | grep -E "\[memu\]"
+
+# Expected output:
+# [memu] before_agent_start hook triggered
+# [memu] Proactive retrieval for query: ...
+# ✅ [memu] Proactively loaded 2 memories
+# [memu] agent_end hook triggered
+# [memu] Auto-learning conversation: ...
+```
 
 ## External Embedding API Configuration
 
