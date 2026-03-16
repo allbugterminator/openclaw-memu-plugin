@@ -24,12 +24,53 @@ Persistent memory for OpenClaw AI agents. Automatically remembers conversations 
 
 ### Installation
 
+#### Step 1: Clone and Install
+
 ```bash
+# Clone the repository
 git clone https://github.com/allbugterminator/openclaw-memu-plugin.git
+
+# Copy to OpenClaw extensions directory
 cp -r openclaw-memu-plugin ~/.openclaw/extensions/memu
+
+# Navigate to plugin directory
 cd ~/.openclaw/extensions/memu
-npm install && npm run build
+
+# Install dependencies
+npm install
+
+# Build TypeScript
+npm run build
+```
+
+#### Step 2: Setup Storage (PostgreSQL only)
+
+Skip this step if using **Cloud** or **In-Memory** backend.
+
+```bash
+# Start PostgreSQL with pgvector extension
+docker run -d \
+  --name memu-postgres \
+  -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_DB=memu \
+  -p 5432:5432 \
+  pgvector/pgvector:pg17
+
+# Verify pgvector is installed
+docker exec memu-postgres psql -U postgres -d memu -c "CREATE EXTENSION IF NOT EXISTS vector;"
+```
+
+#### Step 3: Configure
+
+Edit `~/.openclaw/openclaw.json` and add the plugin configuration (see examples below).
+
+#### Step 4: Restart Gateway
+
+```bash
 openclaw gateway restart
+
+# Verify plugin is loaded
+openclaw rpc call memu.status
 ```
 
 ### Configuration
