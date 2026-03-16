@@ -139,6 +139,91 @@ The plugin uses **lifecycle hooks** to automatically manage memory. These hooks 
 ```
 When both hooks are disabled, you must manually call `memu_memorize` and `memu_retrieve` tools.
 
+#### Storage Backend Configuration
+
+The plugin supports two storage backends:
+
+| Backend | Description | Use Case |
+|---------|-------------|----------|
+| `postgres` | PostgreSQL with pgvector extension | Production, persistent storage |
+| `inmemory` | In-memory storage (no persistence) | Development, testing, temporary data |
+
+**PostgreSQL Configuration (Production):**
+```json
+{
+  "plugins": {
+    "entries": {
+      "memu": {
+        "enabled": true,
+        "config": {
+          "storageType": "postgres",
+          "postgresConnectionString": "postgresql://postgres:postgres@localhost:5432/memu",
+          "embeddingApiKey": "your-api-key",
+          "embeddingBaseUrl": "https://api.openai.com/v1",
+          "autoLearn": true,
+          "proactiveRetrieval": true
+        }
+      }
+    }
+  }
+}
+```
+
+**In-Memory Configuration (Development/Testing):**
+```json
+{
+  "plugins": {
+    "entries": {
+      "memu": {
+        "enabled": true,
+        "config": {
+          "storageType": "inmemory",
+          "embeddingApiKey": "your-api-key",
+          "embeddingBaseUrl": "https://api.openai.com/v1",
+          "autoLearn": true,
+          "proactiveRetrieval": true
+        }
+      }
+    }
+  }
+}
+```
+> ⚠️ **Note:** In-memory storage is volatile - all data is lost when the Gateway restarts.
+
+#### Cloud API Configuration
+
+Use memU Cloud service instead of self-hosted PostgreSQL:
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "memu": {
+        "enabled": true,
+        "config": {
+          "provider": "cloud",
+          "cloudApiKey": "your-memu-cloud-api-key",
+          "autoLearn": true,
+          "proactiveRetrieval": true
+        }
+      }
+    }
+  }
+}
+```
+
+Get your API key at [memu.so](https://memu.so).
+
+**Cloud vs Self-Hosted Comparison:**
+
+| Feature | Cloud | Self-Hosted |
+|---------|-------|-------------|
+| Setup | Instant | Requires PostgreSQL setup |
+| Maintenance | Managed by memU | You manage |
+| Data Control | memU Cloud | Your own infrastructure |
+| Cost | Pay per usage | Free (infrastructure only) |
+| Best For | Quick start, prototyping | Production, data sovereignty |
+
 ## Complete Deployment Guide
 
 ### Prerequisites
