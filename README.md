@@ -36,8 +36,11 @@ cp -r openclaw-memu-plugin ~/.openclaw/extensions/memu
 # Navigate to plugin directory
 cd ~/.openclaw/extensions/memu
 
-# Install dependencies
+# Install Node.js dependencies
 npm install
+
+# Install Python dependencies (required for embedding generation)
+pip install memu-py
 
 # Build TypeScript
 npm run build
