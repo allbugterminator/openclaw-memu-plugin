@@ -6,7 +6,7 @@
   "openclawVersion": ">=0.1.0",
   "configSchema": {
     "type": "object",
-    "additionalProperties": false,
+    "additionalProperties": true,
     "properties": {
       "provider": {
         "type": "string",
@@ -51,6 +51,14 @@
         "type": "string",
         "default": "text-embedding-3-small",
         "description": "Embedding model for RAG retrieval"
+      },
+      "embeddingBaseUrl": {
+        "type": "string",
+        "description": "Embedding API base URL"
+      },
+      "embeddingApiKey": {
+        "type": "string",
+        "description": "Embedding API key"
       },
       "autoLearn": {
         "type": "boolean",

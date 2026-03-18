@@ -12,7 +12,9 @@ const config = {
   isolationMode: "agent",
   llmApiKey: "",
   llmBaseUrl: "",
-  embeddingModel: "text-embedding-3-small"
+  embeddingModel: "text-embedding-3-small",
+  embeddingApiKey: "",
+  embeddingBaseUrl: ""
 };
 
 // PostgreSQL连接池
@@ -54,9 +56,9 @@ async function initServices() {
 
 // 调用外部向量模型API生成嵌入
 async function generateEmbedding(text: string): Promise<number[]> {
-  // 使用配置的向量模型参数
-  const apiKey = config.llmApiKey || "your-api-key";
-  const baseUrl = config.llmBaseUrl || "http://localhost:8000/v1";
+  // 使用配置的向量模型参数，优先使用embedding专用配置，否则fallback到llm配置
+  const apiKey = config.embeddingApiKey || config.llmApiKey || "your-api-key";
+  const baseUrl = config.embeddingBaseUrl || config.llmBaseUrl || "http://localhost:8000/v1";
   const model = config.embeddingModel || "text-embedding-3-small";
 
   try {
